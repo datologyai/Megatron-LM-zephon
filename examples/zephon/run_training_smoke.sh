@@ -56,6 +56,7 @@ common_args=(
     --no-gradient-accumulation-fusion
     --bf16
     --eval-iters 0
+    --eval-interval 1000
     --log-interval 1
     --save-interval 1
     --ckpt-format torch_dist
