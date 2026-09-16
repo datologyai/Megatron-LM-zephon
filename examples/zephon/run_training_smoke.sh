@@ -74,6 +74,7 @@ echo "Phase 2: resume through step ${total_steps} with ${second_phase_gpus} GPU(
 python3 -m torch.distributed.run --nproc-per-node "${second_phase_gpus}" pretrain_gpt_zephon.py \
     "${common_args[@]}" \
     --load "${dump_folder}/model" \
+    --override-opt-param-scheduler \
     --train-iters "${total_steps}"
 
 echo "Zephon training checkpoint/resume smoke test passed: ${dump_folder}"
