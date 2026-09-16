@@ -53,6 +53,7 @@ common_args=(
     --context-parallel-size 1
     --transformer-impl local
     --no-persist-layer-norm
+    --no-gradient-accumulation-fusion
     --bf16
     --eval-iters 0
     --log-interval 1
