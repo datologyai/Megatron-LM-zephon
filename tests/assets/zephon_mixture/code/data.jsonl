@@ -1,0 +1,4 @@
+{"text":"def add(left, right):\n    return left + right"}
+{"text":"for step in range(training_steps):\n    optimizer.step()"}
+{"text":"class Dataset:\n    pass"}
+{"text":"assert checkpoint is not None"}

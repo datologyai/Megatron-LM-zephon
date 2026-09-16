@@ -1,0 +1,2 @@
+# Temporary Git-tag installation until Zephon has a suitable public release.
+zephon @ git+https://github.com/datologyai/zephon.git@v0.0.1b23

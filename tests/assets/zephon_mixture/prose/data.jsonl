@@ -1,0 +1,4 @@
+{"text":"A small deterministic corpus is useful for exercising a training data pipeline."}
+{"text":"Megatron consumes fixed length token blocks while Zephon manages source ordering."}
+{"text":"Checkpointed data state makes interrupted experiments reproducible."}
+{"text":"Weighted mixtures let a training recipe describe several named domains."}
