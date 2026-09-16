@@ -1,9 +1,11 @@
-# The common two-source recipe shared by the Zephon reference integrations.
-# Relative paths are resolved from this recipe file.
+# The common two-canonical-lane recipe shared by the reference integrations.
+# Supply aggregate_dir and run_id at launch time because they identify a
+# particular shared run, not this reusable data recipe.
 
 text_field = "text"
 seed = 42
 chunk_size = 4
+canonical_replicas = 2
 
 [[sources]]
 name = "prose"

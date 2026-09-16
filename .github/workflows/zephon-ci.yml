@@ -48,18 +48,21 @@ jobs:
       - name: Check integration formatting
         run: |
           python -m isort --check-only \
+            examples/zephon/elastic_resume_demo.py \
             megatron/training/datasets/zephon_dataloader.py \
             pretrain_gpt_zephon.py \
             tests/unit_tests/data/test_zephon_dataloader.py \
             tests/unit_tests/data/test_zephon_elastic_resume.py \
             tests/unit_tests/data/zephon_elastic_worker.py
           python -m black --check \
+            examples/zephon/elastic_resume_demo.py \
             megatron/training/datasets/zephon_dataloader.py \
             pretrain_gpt_zephon.py \
             tests/unit_tests/data/test_zephon_dataloader.py \
             tests/unit_tests/data/test_zephon_elastic_resume.py \
             tests/unit_tests/data/zephon_elastic_worker.py
           python -m ruff check \
+            examples/zephon/elastic_resume_demo.py \
             megatron/training/datasets/zephon_dataloader.py \
             pretrain_gpt_zephon.py \
             tests/unit_tests/data/test_zephon_dataloader.py \

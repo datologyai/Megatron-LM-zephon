@@ -1,13 +1,17 @@
-# Zephon GPT dataloader
+# Zephon GPT reference integration
 
-This opt-in entry point replaces only Megatron's GPT training dataloader with a
-deterministic Zephon pipeline. The stock `pretrain_gpt.py` path is unchanged.
+This opt-in reference integration replaces only Megatron's GPT training
+dataloader with a deterministic Zephon pipeline. Model construction,
+tokenization configuration, optimization, parallel training, and Megatron's
+checkpoint coordinator remain unchanged. The stock `pretrain_gpt.py` path is
+also unchanged.
 
-The initial integration intentionally supports fixed-length GPT pretraining
-with Hugging Face tokenizers and context parallel size 1. Validation and test
-loaders are disabled; launch with `--eval-iters 0`.
+The integration demonstrates the same portable data recipe and elastic
+two-worker to one-worker resume used by the TorchTitan-Zephon reference
+integration. Megatron-specific model, batch, and checkpoint settings remain in
+Megatron's command line.
 
-## Install the private dependency
+## Install
 
 Use the Megatron development container with a Git client authenticated for the
 private `datologyai/zephon` repository:
@@ -21,29 +25,35 @@ check. Set `ZEPHON_WHEEL=/path/to/zephon.whl` to validate a local build instead
 of the pinned Git tag. For local Zephon development, install a sibling checkout
 with `uv pip install -e`.
 
-## Data recipe
+## Configure the data recipe
+
+`local_jsonl.toml` is the common base recipe shared by the Megatron and
+TorchTitan reference integrations:
 
 ```toml
 text_field = "text"
-cache_dir = "/local-ssd/zephon"
+seed = 42
+chunk_size = 4
 
 [[sources]]
-name = "web"
-path = "s3://example-bucket/web"
-fmt = "parquet"
+name = "prose"
+path = "../../tests/assets/zephon_mixture/prose"
+fmt = "jsonl"
 weight = 3.0
 
 [[sources]]
 name = "code"
-path = "s3://example-bucket/code"
+path = "../../tests/assets/zephon_mixture/code"
+fmt = "jsonl"
 weight = 1.0
 ```
 
-Relative paths are resolved from the recipe directory. Distributed jobs must
-also set `aggregate_dir` and a unique `run_id`; set `canonical_replicas` to the
-largest data-parallel size across which elastic resume must remain stable.
+Relative paths are resolved from the recipe directory. The weights request a
+75/25 prose/code mixture and Zephon normalizes them automatically. Megatron
+supplies the tokenizer, sequence length, and microbatch size, so those settings
+do not appear in the reusable recipe.
 
-## Launch
+## Launch GPT pretraining
 
 Use the normal Megatron GPT model arguments, replacing the entry point and data
 arguments as follows:
@@ -60,6 +70,64 @@ torchrun --nproc-per-node 1 pretrain_gpt_zephon.py \
   ...
 ```
 
-To checkpoint the data stream alongside model checkpoints, pass
-`--dataloader-save /path/to/checkpoints/dataloader`. Use the same value on a
-resumed run; the entry point restores the state for each data-parallel rank.
+The remaining model, optimizer, batch, and distributed arguments are the same
+ones used by the corresponding `pretrain_gpt.py` launch.
+
+## Prove elastic deterministic resume
+
+Run the complete data-stream demonstration in a CPU-only Linux environment:
+
+```bash
+uv run --no-sync python examples/zephon/elastic_resume_demo.py
+```
+
+The command creates an uninterrupted two-worker reference stream, checkpoints
+the same stream after two steps, resumes it with one worker, and compares every
+field in the Megatron GPT batch. It exits unsuccessfully if any field differs.
+Pass `--work-dir PATH` to keep the checkpoint and JSON stream records.
+
+`elastic_local_jsonl.toml` fixes the logical stream at two canonical replicas.
+The shared aggregate directory and run ID describe one execution, so provide
+them at launch instead of storing them in the reusable recipe:
+
+```bash
+torchrun --nproc-per-node 2 pretrain_gpt_zephon.py \
+  --zephon-data-config examples/zephon/elastic_local_jsonl.toml \
+  --zephon-canonical-replicas 2 \
+  --zephon-aggregate-dir /mnt/zephon-aggregate \
+  --zephon-run-id example-run \
+  --dataloader-save ./checkpoints/dataloader \
+  --save ./checkpoints/model \
+  ...
+```
+
+Resume the completed checkpoint with one worker by keeping the recipe,
+canonical replica count, aggregate directory, run ID, tokenizer, sequence
+length, and global batch definition unchanged. Point `--load` at the model
+checkpoint and reuse `--dataloader-save`:
+
+```bash
+torchrun --nproc-per-node 1 pretrain_gpt_zephon.py \
+  --zephon-data-config examples/zephon/elastic_local_jsonl.toml \
+  --zephon-canonical-replicas 2 \
+  --zephon-aggregate-dir /mnt/zephon-aggregate \
+  --zephon-run-id example-run \
+  --dataloader-save ./checkpoints/dataloader \
+  --load ./checkpoints/model \
+  --save ./checkpoints/model \
+  ...
+```
+
+The physical data-parallel degree may change. The canonical replica count and
+logical global batch must not.
+
+## Checkpoint contract and current scope
+
+At each checkpoint boundary, Megatron calls the external loader's
+`save_state()` method and stores the opaque Zephon checkpoint under
+`--dataloader-save`. On resume, the integration restores the dataloader state
+from the same completed Megatron iteration before returning the iterator.
+
+The initial integration supports fixed-length GPT pretraining with Hugging
+Face tokenizers and context parallel size 1. Validation and test loaders are
+disabled; launch with `--eval-iters 0`.

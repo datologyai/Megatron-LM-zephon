@@ -34,3 +34,4 @@ cd "${repo_root}"
 "${python_path}" -m pytest -q \
   tests/unit_tests/data/test_zephon_dataloader.py \
   tests/unit_tests/data/test_zephon_elastic_resume.py
+"${python_path}" examples/zephon/elastic_resume_demo.py

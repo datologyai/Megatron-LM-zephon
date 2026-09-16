@@ -18,6 +18,20 @@ def add_zephon_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     group = parser.add_argument_group(title="Zephon dataloader")
     group.add_argument("--zephon-data-config", required=True, help="Zephon TOML data recipe")
     group.add_argument(
+        "--zephon-canonical-replicas",
+        type=int,
+        default=None,
+        help="Stable logical data-lane count used across elastic resumes",
+    )
+    group.add_argument(
+        "--zephon-aggregate-dir",
+        default=None,
+        help="Shared directory used to aggregate Zephon checkpoint state",
+    )
+    group.add_argument(
+        "--zephon-run-id", default=None, help="Stable identity for the Zephon data stream"
+    )
+    group.add_argument(
         "--dataloader-save",
         default=None,
         help="Directory used to save and restore Zephon dataloader state",

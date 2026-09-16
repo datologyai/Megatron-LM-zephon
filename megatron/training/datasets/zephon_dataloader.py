@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import pickle
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -112,6 +112,21 @@ def load_zephon_data_config(path: str | os.PathLike[str]) -> ZephonDataConfig:
     if config.fetch_parallelism is not None and config.fetch_parallelism < 1:
         raise ValueError("Zephon fetch_parallelism must be positive")
     return config
+
+
+def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> ZephonDataConfig:
+    """Apply run-specific values without changing the reusable data recipe."""
+
+    overrides = {
+        name: value
+        for name, value in {
+            "canonical_replicas": args.zephon_canonical_replicas,
+            "aggregate_dir": args.zephon_aggregate_dir,
+            "run_id": args.zephon_run_id,
+        }.items()
+        if value is not None
+    }
+    return replace(config, **overrides)
 
 
 def _require_zephon() -> tuple[Any, Any, Any, Any]:
@@ -275,7 +290,7 @@ def zephon_train_valid_test_datasets_provider(
     if mpu.get_tensor_model_parallel_rank() != 0:
         return None, None, None
 
-    config = load_zephon_data_config(args.zephon_data_config)
+    config = apply_zephon_runtime_overrides(load_zephon_data_config(args.zephon_data_config), args)
     tokenizer = build_tokenizer(args)
     loader = MegatronZephonDataLoader(
         config,

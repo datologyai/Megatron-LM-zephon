@@ -9,6 +9,7 @@ import torch
 from megatron.training.datasets.zephon_dataloader import (
     MegatronZephonDataLoader,
     _unwrap_huggingface_tokenizer,
+    apply_zephon_runtime_overrides,
     load_zephon_data_config,
 )
 
@@ -23,6 +24,25 @@ def test_load_zephon_data_config_resolves_weighted_sources() -> None:
     ]
     assert config.sources[0].path == str(repo_root / "tests/assets/zephon_mixture/prose")
     assert config.chunk_size == 4
+
+
+def test_runtime_values_override_reusable_recipe() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    config = load_zephon_data_config(repo_root / "examples/zephon/elastic_local_jsonl.toml")
+    args = SimpleNamespace(
+        zephon_canonical_replicas=4,
+        zephon_aggregate_dir="/shared/aggregate",
+        zephon_run_id="example-run",
+    )
+
+    updated = apply_zephon_runtime_overrides(config, args)
+
+    assert config.canonical_replicas == 2
+    assert config.aggregate_dir is None
+    assert config.run_id is None
+    assert updated.canonical_replicas == 4
+    assert updated.aggregate_dir == "/shared/aggregate"
+    assert updated.run_id == "example-run"
 
 
 def test_load_zephon_data_config_rejects_duplicate_sources(tmp_path: Path) -> None:
