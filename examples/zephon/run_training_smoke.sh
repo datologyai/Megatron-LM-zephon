@@ -30,6 +30,7 @@ common_args=(
     --save "${dump_folder}/model"
     --tokenizer-type HuggingFaceTokenizer
     --tokenizer-model "${tokenizer_model}"
+    --no-create-attention-mask-in-dataloader
     --num-layers 2
     --hidden-size 128
     --ffn-hidden-size 512
