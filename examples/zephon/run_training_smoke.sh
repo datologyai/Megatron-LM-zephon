@@ -60,12 +60,12 @@ common_args=(
 )
 
 echo "Phase 1: train ${first_phase_steps} steps with ${first_phase_gpus} GPU(s)"
-torchrun --nproc-per-node "${first_phase_gpus}" pretrain_gpt_zephon.py \
+python3 -m torch.distributed.run --nproc-per-node "${first_phase_gpus}" pretrain_gpt_zephon.py \
     "${common_args[@]}" \
     --train-iters "${first_phase_steps}"
 
 echo "Phase 2: resume through step ${total_steps} with ${second_phase_gpus} GPU(s)"
-torchrun --nproc-per-node "${second_phase_gpus}" pretrain_gpt_zephon.py \
+python3 -m torch.distributed.run --nproc-per-node "${second_phase_gpus}" pretrain_gpt_zephon.py \
     "${common_args[@]}" \
     --load "${dump_folder}/model" \
     --train-iters "${total_steps}"
