@@ -54,6 +54,9 @@ common_args=(
     --transformer-impl local
     --no-persist-layer-norm
     --no-gradient-accumulation-fusion
+    --no-masked-softmax-fusion
+    --no-bias-gelu-fusion
+    --no-bias-dropout-fusion
     --bf16
     --eval-iters 0
     --eval-interval 1000
