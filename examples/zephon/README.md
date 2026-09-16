@@ -121,6 +121,25 @@ torchrun --nproc-per-node 1 pretrain_gpt_zephon.py \
 The physical data-parallel degree may change. The canonical replica count and
 logical global batch must not.
 
+## Training checkpoint smoke test
+
+On a Linux machine with two CUDA GPUs, run the same bounded training and
+elastic-resume workflow as the TorchTitan-Zephon reference integration:
+
+```bash
+examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
+```
+
+The script uses a complete tiny-GPT recipe. Its first launch trains through
+step 2 on two GPUs and saves model and Zephon dataloader checkpoints. Its
+second launch restores the latest completed checkpoint on one GPU and trains
+step 3 with the same canonical lane count, run identity, and logical global
+batch. Set `TOKENIZER_MODEL` to a local Hugging Face tokenizer directory to
+avoid downloading the default public tokenizer. Use a new output path for
+each invocation. On a single-GPU development box, set `FIRST_PHASE_GPUS=1`;
+this tests the complete checkpoint/resume path but not the physical
+data-parallel resize.
+
 ## Checkpoint contract and current scope
 
 At each checkpoint boundary, Megatron calls the external loader's
