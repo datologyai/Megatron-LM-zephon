@@ -129,17 +129,17 @@ def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> Zepho
     return replace(config, **overrides)
 
 
-def _require_zephon() -> tuple[Any, Any, Any, Any]:
+def _require_zephon() -> tuple[Any, Any, Any, Any, Any]:
     try:
         from zephon import Pipeline
         from zephon.io import Dataset
-        from zephon.work import MixtureSpec, StaticMixtureWorkSource
+        from zephon.work import MixtureSpec, StaticMixtureWorkSource, TokenEstimation
     except ImportError as exc:
         raise ImportError(
             "Zephon GPT pretraining requires the private Zephon package. "
             "See examples/zephon/README.md for installation instructions."
         ) from exc
-    return Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource
+    return Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource, TokenEstimation
 
 
 def _unwrap_huggingface_tokenizer(tokenizer: Any) -> Any:
@@ -167,7 +167,7 @@ class MegatronZephonDataLoader:
         data_parallel_rank: int,
         data_parallel_size: int,
     ) -> None:
-        Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource = _require_zephon()
+        Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource, TokenEstimation = _require_zephon()
         hf_tokenizer = _unwrap_huggingface_tokenizer(tokenizer)
 
         canonical_replicas = config.canonical_replicas or data_parallel_size
@@ -192,6 +192,7 @@ class MegatronZephonDataLoader:
             exhausted_policy="repeat",
             shuffle_shards=True,
             shuffle_within_shard=True,
+            token_estimation=TokenEstimation(),
         )
         pipeline = Pipeline(work_source)
         if config.fetch_parallelism is not None:

@@ -6,12 +6,84 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import megatron.training.datasets.zephon_dataloader as zephon_dataloader
 from megatron.training.datasets.zephon_dataloader import (
     MegatronZephonDataLoader,
     _unwrap_huggingface_tokenizer,
     apply_zephon_runtime_overrides,
     load_zephon_data_config,
 )
+
+
+def test_zephon_loader_enables_token_estimation(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_work_source_options = {}
+    token_estimation = object()
+
+    class FakeDataset:
+        @staticmethod
+        def from_path(**kwargs):
+            return kwargs
+
+    class FakeMixtureSpec:
+        def __init__(self, weights):
+            self.weights = weights
+
+    class FakeStaticMixtureWorkSource:
+        def __init__(self, **kwargs):
+            captured_work_source_options.update(kwargs)
+
+    class FakeTokenEstimation:
+        def __new__(cls):
+            return token_estimation
+
+    class FakePipeline:
+        def __init__(self, _work_source):
+            pass
+
+        def tokenize(self, **_kwargs):
+            return self
+
+        def pack_flat(self, **_kwargs):
+            return self
+
+        def batch(self, *_args, **_kwargs):
+            return self
+
+        def options(self, **_kwargs):
+            return self
+
+        def __iter__(self):
+            return iter(())
+
+    monkeypatch.setattr(
+        zephon_dataloader,
+        "_require_zephon",
+        lambda: (
+            FakePipeline,
+            FakeDataset,
+            FakeMixtureSpec,
+            FakeStaticMixtureWorkSource,
+            FakeTokenEstimation,
+        ),
+    )
+    tokenizer = SimpleNamespace(_tokenizer=SimpleNamespace(tokenizer=object()))
+    config = zephon_dataloader.ZephonDataConfig(
+        sources=(
+            zephon_dataloader.ZephonSource(name="prose", path="prose", weight=3.0),
+            zephon_dataloader.ZephonSource(name="code", path="code", weight=1.0),
+        )
+    )
+
+    MegatronZephonDataLoader(
+        config,
+        tokenizer=tokenizer,
+        micro_batch_size=1,
+        sequence_length=16,
+        data_parallel_rank=0,
+        data_parallel_size=1,
+    )
+
+    assert captured_work_source_options["token_estimation"] is token_estimation
 
 
 def test_load_zephon_data_config_resolves_weighted_sources() -> None:
@@ -23,7 +95,7 @@ def test_load_zephon_data_config_resolves_weighted_sources() -> None:
         ("code", "jsonl", 1.0),
     ]
     assert config.sources[0].path == str(repo_root / "tests/assets/zephon_mixture/prose")
-    assert config.chunk_size == 4
+    assert config.chunk_size == 2
 
 
 def test_runtime_values_override_reusable_recipe() -> None:

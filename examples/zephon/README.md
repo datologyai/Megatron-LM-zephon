@@ -33,7 +33,7 @@ TorchTitan reference integrations:
 ```toml
 text_field = "text"
 seed = 42
-chunk_size = 4
+chunk_size = 2
 
 [[sources]]
 name = "prose"
@@ -49,9 +49,12 @@ weight = 1.0
 ```
 
 Relative paths are resolved from the recipe directory. The weights request a
-75/25 prose/code mixture and Zephon normalizes them automatically. Megatron
-supplies the tokenizer, sequence length, and microbatch size, so those settings
-do not appear in the reusable recipe.
+75/25 prose/code mixture by token count, and Zephon normalizes them
+automatically. The integration enables Zephon's `TokenEstimation` by default,
+so Zephon deterministically calibrates each source's tokens-per-byte ratio and
+uses those estimates to allocate samples that deliver the requested token
+mixture. Megatron supplies the tokenizer, sequence length, and microbatch size,
+so those settings do not appear in the reusable recipe.
 
 ## Launch GPT pretraining
 
