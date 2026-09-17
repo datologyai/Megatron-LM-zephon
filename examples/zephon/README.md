@@ -33,7 +33,7 @@ TorchTitan reference integrations:
 ```toml
 text_field = "text"
 seed = 42
-chunk_size = 2
+chunk_size = 4
 
 [[sources]]
 name = "prose"
@@ -48,13 +48,17 @@ fmt = "jsonl"
 weight = 1.0
 ```
 
-Relative paths are resolved from the recipe directory. The weights request a
-75/25 prose/code mixture by token count, and Zephon normalizes them
-automatically. The integration enables Zephon's `TokenEstimation` by default,
-so Zephon deterministically calibrates each source's tokens-per-byte ratio and
-uses those estimates to allocate samples that deliver the requested token
-mixture. Megatron supplies the tokenizer, sequence length, and microbatch size,
-so those settings do not appear in the reusable recipe.
+Relative paths are resolved from the recipe directory. Source weights are
+relative token proportions: `3.0` and `1.0` request a 75/25 prose/code token
+mixture. The integration passes those values unchanged to Zephon's
+`MixtureSpec`, which performs the normalization.
+
+Training always constructs a bare `TokenEstimation()`. Zephon deterministically
+calibrates each source's tokens-per-byte ratio and uses those estimates when
+allocating records. This reference integration deliberately exposes no token
+estimation tuning knobs and does not add a post-tokenization `ensure_mixture`
+operation. Megatron supplies the tokenizer, sequence length, and microbatch
+size, so those settings do not appear in the reusable recipe.
 
 ## Launch GPT pretraining
 
@@ -86,8 +90,10 @@ uv run --no-sync python examples/zephon/elastic_resume_demo.py
 
 The command creates an uninterrupted two-worker reference stream, checkpoints
 the same stream after two steps, resumes it with one worker, and compares every
-field in the Megatron GPT batch. It exits unsuccessfully if any field differs.
-Pass `--work-dir PATH` to keep the checkpoint and JSON stream records.
+field in the Megatron GPT batch. Lane-to-worker assignment may reorder batches
+after a topology change, so comparison is order-independent within each global
+step. It exits unsuccessfully if any field differs. Pass `--work-dir PATH` to
+keep the checkpoint and raw, emitted-order JSON stream records.
 
 `elastic_local_jsonl.toml` fixes the logical stream at two canonical replicas.
 The shared aggregate directory and run ID describe one execution, so provide

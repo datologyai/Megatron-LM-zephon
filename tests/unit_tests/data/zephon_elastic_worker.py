@@ -45,9 +45,7 @@ def _collect_global_steps(
         local_batches = []
         for _ in range(batches_per_rank):
             batch = next(loader)
-            local_batches.append(
-                {"tokens": batch["tokens"].tolist(), "labels": batch["labels"].tolist()}
-            )
+            local_batches.append({name: value.tolist() for name, value in batch.items()})
         gathered = [None] * world_size
         dist.all_gather_object(gathered, local_batches)
         if dist.get_rank() == 0:
@@ -74,7 +72,7 @@ def main() -> None:
             ZephonSource(name="prose", path=str(source_root / "prose")),
             ZephonSource(name="code", path=str(source_root / "code")),
         ),
-        chunk_size=2,
+        chunk_size=4,
         canonical_replicas=2,
         aggregate_dir=str(args.output_dir / "aggregate"),
         run_id="megatron-elastic-resume-test",

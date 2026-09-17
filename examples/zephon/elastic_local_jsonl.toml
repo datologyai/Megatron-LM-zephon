@@ -1,10 +1,10 @@
-# The common token-aware, two-canonical-lane recipe used by this integration.
+# The common token-aware, two-canonical-lane recipe shared by the integrations.
 # Supply aggregate_dir and run_id at launch time because they identify a
 # particular shared run, not this reusable data recipe.
 
 text_field = "text"
 seed = 42
-chunk_size = 2
+chunk_size = 4
 canonical_replicas = 2
 
 [[sources]]

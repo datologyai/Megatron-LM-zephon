@@ -218,6 +218,7 @@ class MegatronZephonDataLoader:
             pipeline.tokenize(
                 tokenizer=hf_tokenizer,
                 field=config.text_field,
+                add_attention_mask=False,
                 max_length=sequence_length + 1,
                 split_long_samples=True,
                 special_tokens="bos_eos",

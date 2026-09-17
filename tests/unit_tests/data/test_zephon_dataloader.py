@@ -1,5 +1,6 @@
 # Copyright (c) 2026, DatologyAI. All rights reserved.
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,13 +16,19 @@ from megatron.training.datasets.zephon_dataloader import (
 )
 
 
-def test_zephon_loader_enables_token_estimation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_zephon_loader_matches_shared_training_pipeline_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset_options = []
     captured_work_source_options = {}
+    pipeline_operations = []
     token_estimation = object()
+    tokenizer = object()
 
     class FakeDataset:
         @staticmethod
         def from_path(**kwargs):
+            dataset_options.append(kwargs)
             return kwargs
 
     class FakeMixtureSpec:
@@ -33,20 +40,25 @@ def test_zephon_loader_enables_token_estimation(monkeypatch: pytest.MonkeyPatch)
             captured_work_source_options.update(kwargs)
 
     class FakeTokenEstimation:
-        def __new__(cls):
+        def __new__(cls, *args, **kwargs):
+            assert args == ()
+            assert kwargs == {}
             return token_estimation
 
     class FakePipeline:
         def __init__(self, _work_source):
             pass
 
-        def tokenize(self, **_kwargs):
+        def tokenize(self, **kwargs):
+            pipeline_operations.append(("tokenize", kwargs))
             return self
 
-        def pack_flat(self, **_kwargs):
+        def pack_flat(self, **kwargs):
+            pipeline_operations.append(("pack_flat", kwargs))
             return self
 
-        def batch(self, *_args, **_kwargs):
+        def batch(self, *args, **kwargs):
+            pipeline_operations.append(("batch", args, kwargs))
             return self
 
         def options(self, **_kwargs):
@@ -66,24 +78,49 @@ def test_zephon_loader_enables_token_estimation(monkeypatch: pytest.MonkeyPatch)
             FakeTokenEstimation,
         ),
     )
-    tokenizer = SimpleNamespace(_tokenizer=SimpleNamespace(tokenizer=object()))
     config = zephon_dataloader.ZephonDataConfig(
         sources=(
-            zephon_dataloader.ZephonSource(name="prose", path="prose", weight=3.0),
-            zephon_dataloader.ZephonSource(name="code", path="code", weight=1.0),
-        )
+            zephon_dataloader.ZephonSource(name="prose", path="prose", fmt="jsonl", weight=3.0),
+            zephon_dataloader.ZephonSource(name="code", path="code", fmt="jsonl", weight=1.0),
+        ),
+        chunk_size=4,
     )
 
     MegatronZephonDataLoader(
         config,
-        tokenizer=tokenizer,
-        micro_batch_size=1,
+        tokenizer=SimpleNamespace(_tokenizer=SimpleNamespace(tokenizer=tokenizer)),
+        micro_batch_size=2,
         sequence_length=16,
         data_parallel_rank=0,
         data_parallel_size=1,
     )
 
+    assert dataset_options == [
+        {"name": "prose", "path": "prose", "fmt": "jsonl"},
+        {"name": "code", "path": "code", "fmt": "jsonl"},
+    ]
+    assert captured_work_source_options["mixture"].weights == {"prose": 3.0, "code": 1.0}
+    assert captured_work_source_options["chunk_size"] == 4
+    assert captured_work_source_options["seed"] == 42
+    assert captured_work_source_options["exhausted_policy"] == "repeat"
+    assert captured_work_source_options["shuffle_shards"] is True
+    assert captured_work_source_options["shuffle_within_shard"] is True
     assert captured_work_source_options["token_estimation"] is token_estimation
+    assert pipeline_operations == [
+        (
+            "tokenize",
+            {
+                "tokenizer": tokenizer,
+                "field": "text",
+                "add_attention_mask": False,
+                "max_length": 17,
+                "split_long_samples": True,
+                "special_tokens": "bos_eos",
+            },
+        ),
+        ("pack_flat", {"max_length": 17, "algorithm": "wrap", "emit_positions": True}),
+        ("batch", (2,), {"drop_last": True}),
+    ]
 
 
 def test_load_zephon_data_config_resolves_weighted_sources() -> None:
@@ -95,7 +132,29 @@ def test_load_zephon_data_config_resolves_weighted_sources() -> None:
         ("code", "jsonl", 1.0),
     ]
     assert config.sources[0].path == str(repo_root / "tests/assets/zephon_mixture/prose")
-    assert config.chunk_size == 2
+    assert config.chunk_size == 4
+
+
+def test_shared_zephon_artifact_hashes() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    expected_hashes = {
+        "examples/zephon/local_jsonl.toml": (
+            "18f7f2aeb2960a3f2a8527dcafb795a6eabdf8cd488510fd85ad558767beac98"
+        ),
+        "examples/zephon/elastic_local_jsonl.toml": (
+            "17e7657a445598b5434a459848c4d8de0370814397cbc575e43717dd90d76ed9"
+        ),
+        "tests/assets/zephon_mixture/prose/data.jsonl": (
+            "849b787063a051d8e4247b9006d7f16a4f4824692b2d14fae846b8ac7a0fbc1e"
+        ),
+        "tests/assets/zephon_mixture/code/data.jsonl": (
+            "c81b60a1d641b40db0226112ea89e1bdaff42c6efb393e632bfe44c6f5d1b42a"
+        ),
+    }
+
+    for relative_path, expected_hash in expected_hashes.items():
+        artifact = repo_root / relative_path
+        assert hashlib.sha256(artifact.read_bytes()).hexdigest() == expected_hash
 
 
 def test_runtime_values_override_reusable_recipe() -> None:

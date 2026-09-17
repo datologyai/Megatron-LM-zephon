@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import socket
@@ -45,15 +46,19 @@ def _load_steps(path: Path) -> list[list[dict[str, list]]]:
         return pickle.load(output_file)
 
 
-def test_elastic_resume_preserves_global_batch_order(tmp_path: Path) -> None:
+def _canonicalize_steps(steps: list[list[dict[str, list]]]) -> list[list[dict[str, list]]]:
+    return [sorted(step, key=lambda batch: json.dumps(batch, sort_keys=True)) for step in steps]
+
+
+def test_elastic_resume_preserves_global_step_contents(tmp_path: Path) -> None:
     pytest.importorskip("zephon")
     baseline_dir = tmp_path / "baseline"
     elastic_dir = tmp_path / "elastic"
 
-    _run_phase(mode="baseline", num_processes=2, num_steps=2, output_dir=baseline_dir)
-    _run_phase(mode="save", num_processes=2, num_steps=1, output_dir=elastic_dir)
-    _run_phase(mode="resume", num_processes=1, num_steps=1, output_dir=elastic_dir)
+    _run_phase(mode="baseline", num_processes=2, num_steps=4, output_dir=baseline_dir)
+    _run_phase(mode="save", num_processes=2, num_steps=2, output_dir=elastic_dir)
+    _run_phase(mode="resume", num_processes=1, num_steps=2, output_dir=elastic_dir)
 
-    assert _load_steps(baseline_dir / "baseline.pkl") == _load_steps(
-        elastic_dir / "save.pkl"
-    ) + _load_steps(elastic_dir / "resume.pkl")
+    reference = _load_steps(baseline_dir / "baseline.pkl")
+    resumed = _load_steps(elastic_dir / "save.pkl") + _load_steps(elastic_dir / "resume.pkl")
+    assert _canonicalize_steps(resumed) == _canonicalize_steps(reference)
