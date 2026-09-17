@@ -86,6 +86,14 @@ restores the dataloader state associated with the same completed Megatron
 iteration before returning the iterator. Interrupted or partial checkpoints are
 not valid resume points.
 
+Zephon aggregates all active data-parallel participants into a complete logical
+stream checkpoint. Megatron still writes the returned state for each DP rank,
+but DP rank 0 is the canonical on-disk owner used for resume. Every active DP
+rank restores that same canonical file, including after scale-out. The outer
+checkpoint records its Megatron iteration; a missing file, malformed payload,
+or iteration mismatch is a hard resume error. A fresh run without `--load` does
+not require dataloader checkpoint state.
+
 For an elastic resume, keep these values unchanged:
 
 - recipe and source identities;
@@ -97,6 +105,15 @@ The physical data-parallel world size may change. Zephon preserves the same
 canonical-lane batch contents within each global training step, but lane
 presentation order may change when lanes are reassigned to workers. Therefore,
 elastic comparisons are order-independent within each global step.
+
+Zephon's coordination world contains distinct data/checkpoint participants,
+not every Megatron process: `world_size` and `dp_degree` are the data-parallel
+size, while `global_rank` and `dp_group_id` are the data-parallel rank. TP ranks
+receive the TP0 batch through Megatron's existing tensor-parallel broadcast.
+Pipeline stages that advance equivalent deterministic streams use the same DP
+identity, and only TP0/PP0 calls `save_state()`, so model-parallel replicas are
+not additional Zephon checkpoint contributors. Dataloader files always use the
+canonical TP0/PP0, non-expert-qualified directory on both save and restore.
 
 ## Behavior and defaults
 
@@ -127,6 +144,21 @@ Zephon is currently private. `requirements-zephon.txt` pins the integration to
 a reviewed private release tag; a public distribution should replace that pin
 before this repository becomes public.
 
+The tested topology matrix for this change is deliberately narrow:
+
+| Topology | Coverage | Result |
+| --- | --- | --- |
+| DP 2 -> 1, TP=PP=EP=1 | Real Zephon CPU stream checkpoint/resume demo | Exact global-step match. |
+| DP 1 -> 2, TP=PP=EP=1 | Real Zephon CPU stream checkpoint/resume demo | Exact global-step match. |
+| DP 1 -> 1, TP=PP=EP=1 | Existing one-GPU trainer smoke result | Model and dataloader resume passed; not rerun for this change. |
+| TP=2 and PP=2, fixed DP | Unit contract for Zephon runtime identity plus Megatron's existing TP broadcast/checkpoint-participant path | Options are DP-scoped; no multi-GPU trainer run in this change. |
+| EP>1, fixed DP | Unit contract for save/restore path construction | Both resolve the same non-expert-qualified file; no multi-GPU trainer run in this change. |
+
+Elastic TP, PP, or EP changes, context parallelism greater than one, validation
+and test dataloaders, and pretokenized or prepacked inputs remain unsupported or
+unvalidated. The matrix above should not be read as general model-parallel or
+arbitrary-topology elastic support.
+
 Run the public adapter test without installing Zephon:
 
 ```bash
@@ -141,4 +173,5 @@ scripts/validate_zephon_install.sh
 ```
 
 The validation script installs the pinned release, runs the adapter test with
-the real package, and executes the CPU elastic demonstration.
+the real package, and executes the CPU elastic demonstration in both 2-to-1 and
+1-to-2 configurations.

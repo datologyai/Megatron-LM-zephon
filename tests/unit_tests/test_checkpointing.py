@@ -115,7 +115,10 @@ def test_maybe_save_dataloader_state_uses_explicit_process_groups(tmp_path):
         )
 
     assert barriers == [groups["dp"], groups["dp"]]
-    assert saved[0][0] == {"dataloader_state_dict": {"global_sequence_id": 16}}
+    assert saved[0][0] == {
+        "iteration": 2,
+        "dataloader_state_dict": {"global_sequence_id": 16},
+    }
     assert saved[0][1] == str(
         tmp_path / "iter_0000002" / "mp_rank_00_000" / "train_dataloader_dprank003.pt"
     )

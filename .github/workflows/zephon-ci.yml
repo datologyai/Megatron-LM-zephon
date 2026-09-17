@@ -5,23 +5,27 @@ on:
     paths:
       - ".github/workflows/zephon-ci.yml"
       - "examples/zephon/**"
+      - "megatron/training/checkpointing.py"
       - "megatron/training/datasets/zephon_dataloader.py"
       - "pretrain_gpt_zephon.py"
       - "requirements-zephon.txt"
       - "scripts/validate_zephon_install.sh"
       - "tests/assets/zephon_mixture/**"
       - "tests/unit_tests/data/*zephon*"
+      - "tests/unit_tests/test_checkpointing.py"
   push:
     branches: [main, "codex/zephon-dataloader"]
     paths:
       - ".github/workflows/zephon-ci.yml"
       - "examples/zephon/**"
+      - "megatron/training/checkpointing.py"
       - "megatron/training/datasets/zephon_dataloader.py"
       - "pretrain_gpt_zephon.py"
       - "requirements-zephon.txt"
       - "scripts/validate_zephon_install.sh"
       - "tests/assets/zephon_mixture/**"
       - "tests/unit_tests/data/*zephon*"
+      - "tests/unit_tests/test_checkpointing.py"
   workflow_dispatch:
 
 permissions:
@@ -77,4 +81,7 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install pytest triton click requests pyyaml numpy
       - name: Run public adapter tests
-        run: python -m pytest -q tests/unit_tests/data/test_zephon_dataloader.py
+        run: |
+          python -m pytest -q tests/unit_tests/data/test_zephon_dataloader.py
+          python -m pytest -q tests/unit_tests/test_checkpointing.py \
+            -k "maybe_save_dataloader_state"

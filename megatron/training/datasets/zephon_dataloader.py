@@ -14,9 +14,8 @@ from typing import Any, Mapping, Sequence
 import torch
 
 from megatron.core import mpu
-from megatron.core.tokenizers.utils.build_tokenizer import build_tokenizer
-from megatron.training import get_args, print_rank_0
-from megatron.training.checkpointing import get_checkpoint_name
+from megatron.training import get_args, get_tokenizer, print_rank_0
+from megatron.training.checkpointing import get_dataloader_checkpoint_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +128,28 @@ def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> Zepho
     return replace(config, **overrides)
 
 
+def _build_zephon_runtime_options(
+    config: ZephonDataConfig, *, data_parallel_rank: int, data_parallel_size: int
+) -> dict[str, Any]:
+    """Build Zephon coordination options for the ranks that own distinct data streams."""
+
+    options: dict[str, Any] = {
+        "deterministic": True,
+        "dp_degree": data_parallel_size,
+        "dp_group_id": data_parallel_rank,
+        "world_size": data_parallel_size,
+        "global_rank": data_parallel_rank,
+        "canonical_replicas": config.canonical_replicas or data_parallel_size,
+    }
+    if config.cache_dir is not None:
+        options["io_options"] = {"cache": {"enabled": True, "root": config.cache_dir}}
+    if config.aggregate_dir is not None:
+        options["aggregate_dir"] = config.aggregate_dir
+    if config.run_id is not None:
+        options["run_id"] = config.run_id
+    return options
+
+
 def _require_zephon() -> tuple[Any, Any, Any, Any, Any]:
     try:
         from zephon import Pipeline
@@ -198,21 +219,9 @@ class MegatronZephonDataLoader:
         if config.fetch_parallelism is not None:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
 
-        options: dict[str, Any] = {
-            "deterministic": True,
-            "dp_degree": data_parallel_size,
-            "dp_group_id": data_parallel_rank,
-            "canonical_replicas": canonical_replicas,
-        }
-        if torch.distributed.is_initialized():
-            options["world_size"] = torch.distributed.get_world_size()
-            options["global_rank"] = torch.distributed.get_rank()
-        if config.cache_dir is not None:
-            options["io_options"] = {"cache": {"enabled": True, "root": config.cache_dir}}
-        if config.aggregate_dir is not None:
-            options["aggregate_dir"] = config.aggregate_dir
-        if config.run_id is not None:
-            options["run_id"] = config.run_id
+        options = _build_zephon_runtime_options(
+            config, data_parallel_rank=data_parallel_rank, data_parallel_size=data_parallel_size
+        )
 
         self._pipeline = (
             pipeline.tokenize(
@@ -256,25 +265,61 @@ class MegatronZephonDataLoader:
         checkpoint = state_dict.get("zephon")
         if not isinstance(checkpoint, bytes):
             raise ValueError("Expected Zephon checkpoint state to contain bytes")
-        self._pipeline.restore(pickle.loads(checkpoint))
+        try:
+            restored_checkpoint = pickle.loads(checkpoint)
+        except (pickle.PickleError, EOFError, AttributeError, ImportError, IndexError) as exc:
+            raise ValueError("Unable to deserialize Zephon checkpoint state") from exc
+        self._pipeline.restore(restored_checkpoint)
         self._iterator = iter(self._pipeline)
 
 
+def _zephon_dataloader_checkpoint_path(args: Any) -> str:
+    """Select the complete Zephon checkpoint owned by canonical DP rank 0."""
+
+    return get_dataloader_checkpoint_name(args.dataloader_save, args.iteration, 0)
+
+
 def _restore_dataloader_state(loader: MegatronZephonDataLoader, args: Any) -> None:
-    if args.load is None or args.dataloader_save is None:
+    if args.load is None:
         return
-    state_path = get_checkpoint_name(
-        args.dataloader_save,
-        args.iteration,
-        pipeline_rank=0,
-        tensor_rank=0,
-        basename=f"train_dataloader_dprank{mpu.get_data_parallel_rank():03d}.pt",
-    )
+    if not args.dataloader_save:
+        raise ValueError("Zephon resume with --load requires --dataloader-save")
+
+    state_path = _zephon_dataloader_checkpoint_path(args)
     if not os.path.exists(state_path):
-        print_rank_0(f"> Zephon dataloader state not found at {state_path}; starting fresh")
-        return
-    saved = torch.load(state_path, map_location="cpu", weights_only=False)
-    loader.restore_state(saved["dataloader_state_dict"])
+        raise FileNotFoundError(
+            f"Zephon dataloader checkpoint for iteration {args.iteration} was not found at "
+            f"{state_path}"
+        )
+    try:
+        saved = torch.load(state_path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load Zephon dataloader checkpoint at {state_path}") from exc
+    if not isinstance(saved, Mapping):
+        raise ValueError(
+            f"Malformed Zephon dataloader checkpoint at {state_path}: expected a mapping"
+        )
+    saved_iteration = saved.get("iteration")
+    if not isinstance(saved_iteration, int):
+        raise ValueError(
+            f"Malformed Zephon dataloader checkpoint at {state_path}: "
+            "missing integer 'iteration'"
+        )
+    if saved_iteration != args.iteration:
+        raise ValueError(
+            f"Zephon dataloader checkpoint iteration mismatch at {state_path}: "
+            f"expected {args.iteration}, found {saved_iteration}"
+        )
+    state_dict = saved.get("dataloader_state_dict")
+    if not isinstance(state_dict, Mapping):
+        raise ValueError(
+            f"Malformed Zephon dataloader checkpoint at {state_path}: "
+            "missing mapping 'dataloader_state_dict'"
+        )
+    try:
+        loader.restore_state(state_dict)
+    except (ValueError, TypeError, pickle.PickleError) as exc:
+        raise ValueError(f"Malformed Zephon dataloader state at {state_path}: {exc}") from exc
     print_rank_0(f"> restored Zephon dataloader state from {state_path}")
 
 
@@ -293,7 +338,7 @@ def zephon_train_valid_test_datasets_provider(
         return None, None, None
 
     config = apply_zephon_runtime_overrides(load_zephon_data_config(args.zephon_data_config), args)
-    tokenizer = build_tokenizer(args)
+    tokenizer = get_tokenizer()
     loader = MegatronZephonDataLoader(
         config,
         tokenizer=tokenizer,

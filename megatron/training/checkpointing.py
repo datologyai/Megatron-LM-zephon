@@ -1541,20 +1541,15 @@ def maybe_save_dataloader_state(
     train_dataloader_state_dict = train_iterator.iterable.save_state()
     if dp_rank == 0:
         print(f'saving dataloader checkpoint at iteration {iteration} to {dataloader_save_path}')
-    data_state_save_path = get_checkpoint_name(
+    data_state_save_path = get_dataloader_checkpoint_name(
         dataloader_save_path,
         iteration,
+        dp_rank,
         pipeline_parallel=(
             get_pg_size(pp_group) > 1
             if pp_group is not None
             else mpu.get_pipeline_model_parallel_world_size() > 1
         ),
-        # Dataloader state is sharded only by DP rank. Keep it in the canonical TP0/PP0 directory.
-        tensor_rank=0,
-        pipeline_rank=0,
-        expert_parallel=False,
-        expert_rank=0,
-        basename=f'train_dataloader_dprank{dp_rank:03d}.pt',
     )
 
     data_parallel_group = dp_group if dp_group is not None else mpu.get_data_parallel_group()
@@ -1568,9 +1563,28 @@ def maybe_save_dataloader_state(
     if train_dataloader_state_dict is None:
         return
 
-    dataloader_save_dict = {}
+    dataloader_save_dict = {'iteration': iteration}
     dataloader_save_dict['dataloader_state_dict'] = train_dataloader_state_dict
     torch.save(dataloader_save_dict, data_state_save_path)
+
+
+def get_dataloader_checkpoint_name(
+    dataloader_save_path, iteration, dp_rank, *, pipeline_parallel=None
+):
+    """Return the canonical model-parallel path for one DP dataloader checkpoint."""
+
+    return get_checkpoint_name(
+        dataloader_save_path,
+        iteration,
+        pipeline_parallel=pipeline_parallel,
+        # Dataloader state is sharded only by DP rank. Keep it in the canonical TP0/PP0
+        # directory and never qualify it by expert rank.
+        tensor_rank=0,
+        pipeline_rank=0,
+        expert_parallel=False,
+        expert_rank=0,
+        basename=f'train_dataloader_dprank{dp_rank:03d}.pt',
+    )
 
 
 def generate_state_dict(

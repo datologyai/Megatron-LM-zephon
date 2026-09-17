@@ -41,13 +41,16 @@ state without training a model:
 
 ```bash
 uv run --no-sync python examples/zephon/elastic_resume_demo.py
+uv run --no-sync python examples/zephon/elastic_resume_demo.py \
+  --initial-workers 1 --resume-workers 2
 ```
 
-The demo creates an uninterrupted two-worker reference stream, checkpoints a
-second stream after two global steps, resumes it with one worker, and compares
-all fields in the Megatron GPT batches. Lane-to-worker assignment may reorder
-batches after the topology change, so comparison is order-independent within
-each global step. Success ends with `Exact global-step match: YES`.
+The first command covers DP 2-to-1 and the second covers DP 1-to-2. Each creates
+an uninterrupted reference stream, checkpoints a second stream after two global
+steps, resumes under the requested worker count, and compares all fields in the
+Megatron GPT batches. Lane-to-worker assignment may reorder batches after the
+topology change, so comparison is order-independent within each global step.
+Success ends with `Exact global-step match: YES`.
 
 Pass `--work-dir PATH` to retain the checkpoint and the raw, emitted-order JSON
 stream records for diagnosis.
@@ -104,6 +107,13 @@ a physical data-parallel resize.
 6. Saves Zephon stream state beside the corresponding completed Megatron
    checkpoint.
 7. Restores the logical stream after changing the physical worker count.
+
+Zephon checkpoint aggregation is coordinated only across distinct DP streams.
+TP/PP replicas are not independent contributors: Megatron broadcasts the TP0
+batch to other TP ranks, equivalent PP streams share the DP identity, and only
+TP0/PP0 invokes `save_state()`. Resume always reads the complete checkpoint
+owned on disk by DP rank 0. Missing, malformed, or wrong-iteration dataloader
+state fails the requested resume instead of starting a fresh stream.
 
 For the exact pipeline and checkpoint contract, see the
 [integration reference](../../docs/zephon.md).
@@ -181,6 +191,17 @@ behavior in a fresh temporary environment:
 scripts/validate_zephon_install.sh
 ```
 
+The precise validation matrix is:
+
+| Topology | Validation status |
+| --- | --- |
+| DP 2 -> 1, TP=PP=EP=1 | Real Zephon CPU demo passes with an exact global-step match. |
+| DP 1 -> 2, TP=PP=EP=1 | Real Zephon CPU demo passes with an exact global-step match. |
+| DP 1 -> 1, TP=PP=EP=1 | Existing one-GPU trainer smoke passed; not rerun for this change. |
+| TP=2 and/or PP=2, fixed DP | DP-scoped Zephon identity and Megatron broadcast/checkpoint participation are unit-tested; no multi-GPU trainer run yet. |
+| EP>1, fixed DP | Save/restore filename symmetry is unit-tested; no multi-GPU trainer run yet. |
+
 The initial reference integration supports online raw text, fixed-length GPT
 pretraining, Hugging Face tokenizers, and context parallel size 1. Validation
-and test loaders are not implemented; use `--eval-iters 0`.
+and test loaders are not implemented; use `--eval-iters 0`. Elastic TP/PP/EP
+changes and arbitrary mixed model-parallel topologies have not been validated.

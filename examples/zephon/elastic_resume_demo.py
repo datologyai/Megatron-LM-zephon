@@ -1,6 +1,6 @@
 # Copyright (c) 2026, DatologyAI. All rights reserved.
 
-"""Demonstrate exact Zephon data-stream resume from two workers to one."""
+"""Demonstrate exact Zephon data-stream resume across a DP topology change."""
 
 from __future__ import annotations
 
@@ -20,8 +20,6 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RECIPE = REPO_ROOT / "examples" / "zephon" / "elastic_local_jsonl.toml"
-INITIAL_NUM_WORKERS = 2
-RESUME_NUM_WORKERS = 1
 
 
 class TinyTokenizer:
@@ -208,7 +206,9 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     canonical_replicas = recipe_values.get("canonical_replicas")
     if not isinstance(canonical_replicas, int) or canonical_replicas <= 0:
         raise ValueError("The elastic demo requires positive canonical_replicas")
-    for num_workers in (INITIAL_NUM_WORKERS, RESUME_NUM_WORKERS):
+    for num_workers in (args.initial_workers, args.resume_workers):
+        if num_workers <= 0:
+            raise ValueError("initial-workers and resume-workers must be positive")
         if canonical_replicas % num_workers:
             raise ValueError(
                 f"canonical_replicas={canonical_replicas} must be divisible by "
@@ -227,7 +227,7 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     }
     _run_phase(
         phase="reference",
-        num_workers=INITIAL_NUM_WORKERS,
+        num_workers=args.initial_workers,
         num_steps=args.total_steps,
         output_dir=reference_dir,
         run_id="zephon-elastic-reference",
@@ -235,7 +235,7 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     )
     _run_phase(
         phase="save",
-        num_workers=INITIAL_NUM_WORKERS,
+        num_workers=args.initial_workers,
         num_steps=args.checkpoint_after,
         output_dir=elastic_dir,
         run_id="zephon-elastic-resume",
@@ -243,7 +243,7 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     )
     _run_phase(
         phase="resume",
-        num_workers=RESUME_NUM_WORKERS,
+        num_workers=args.resume_workers,
         num_steps=args.total_steps - args.checkpoint_after,
         output_dir=elastic_dir,
         run_id="zephon-elastic-resume",
@@ -268,10 +268,10 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     after = _format_fingerprints(after_hashes)
     print("Zephon deterministic elastic resume")
     print(f"Mixture weights:       {source_weights}")
-    print("Data-parallel workers: 2 -> 1")
+    print(f"Data-parallel workers: {args.initial_workers} -> {args.resume_workers}")
     print(f"{'Reference:':<23}{reference_before} | {reference_after}")
-    print(f"{'2-worker stream:':<23}{before} | checkpoint")
-    print(f"{'1-worker resume:':<23}{' ' * len(before)} | {after}")
+    print(f"{f'{args.initial_workers}-worker stream:':<23}{before} | checkpoint")
+    print(f"{f'{args.resume_workers}-worker resume:':<23}{' ' * len(before)} | {after}")
     print(f"Exact global-step match: {'YES' if matches else 'NO'}")
     return matches
 
@@ -279,8 +279,8 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Prove that Zephon global steps checkpointed with two workers "
-            "resume exactly with one worker."
+            "Prove that Zephon global steps checkpointed under one DP topology "
+            "resume exactly under another."
         )
     )
     parser.add_argument("--recipe", type=Path, default=DEFAULT_RECIPE)
@@ -288,6 +288,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-after", type=int, default=2)
     parser.add_argument("--sequence-length", type=int, default=16)
     parser.add_argument("--micro-batch-size", type=int, default=1)
+    parser.add_argument("--initial-workers", type=int, default=2)
+    parser.add_argument("--resume-workers", type=int, default=1)
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--phase", choices=["reference", "save", "resume"], help=argparse.SUPPRESS)
