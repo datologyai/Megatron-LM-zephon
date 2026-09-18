@@ -1,10 +1,11 @@
 # Zephon + Megatron-LM
 
 This example replaces Megatron's GPT training dataloader with Zephon while
-leaving model construction, tokenizer selection, optimization, distributed
-training, and model checkpointing in Megatron. It demonstrates token-aware
-source mixtures, deterministic checkpoint/resume, and an elastic resume at a
-different data-parallel degree.
+leaving model construction, model-facing tokenizer selection, optimization,
+distributed training, and model checkpointing in Megatron. Zephon independently
+loads the data-pipeline tokenizer from the same `--tokenizer-model` value. The
+example demonstrates token-aware source mixtures, deterministic
+checkpoint/resume, and an elastic resume at a different data-parallel degree.
 
 The stock `pretrain_gpt.py` path is unchanged. Zephon training uses the opt-in
 `pretrain_gpt_zephon.py` entry point.
@@ -100,8 +101,9 @@ a physical data-parallel resize.
 1. Loads two raw-text JSONL sources from the checked-in TOML recipe.
 2. Passes the configured 3:1 weights to Zephon as token proportions.
 3. Uses bare `TokenEstimation()` to calibrate online source allocation.
-4. Tokenizes with Megatron's Hugging Face tokenizer, splits long records, and
-   packs fixed-length sequences online.
+4. Lets Zephon load its own Hugging Face tokenizer from Megatron's configured
+   tokenizer model, then splits long records and packs fixed-length sequences
+   online.
 5. Converts each Zephon batch into Megatron's GPT tensor dictionary while
    preserving `[micro_batch_size, sequence_length]`.
 6. Saves Zephon stream state beside the corresponding completed Megatron
@@ -147,8 +149,11 @@ Zephon's format detection. Weights are relative token proportions: `3.0` and
 
 Training always uses bare `TokenEstimation()`. There are no estimator tuning
 knobs in the recipe and no post-tokenization `ensure_mixture()` operation.
-Megatron supplies the tokenizer, sequence length, and microbatch size, so those
-settings stay in Megatron's launch configuration.
+Megatron supplies the tokenizer model identifier, sequence length, and
+microbatch size, so those settings stay in Megatron's launch configuration.
+Megatron and Zephon each load a tokenizer instance from that identifier. Keep
+the Hugging Face tokenizer assets unchanged across resume, and do not depend on
+Megatron-only tokenizer mutations or loading flags for this reference path.
 
 For elastic training, start from `elastic_local_jsonl.toml`. Keep the recipe,
 canonical replica count, aggregate directory, run ID, tokenizer, sequence

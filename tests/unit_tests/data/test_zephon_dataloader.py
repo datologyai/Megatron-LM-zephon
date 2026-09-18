@@ -12,8 +12,8 @@ from megatron.training.datasets.zephon_dataloader import (
     MegatronZephonDataLoader,
     _build_zephon_runtime_options,
     _restore_dataloader_state,
-    _unwrap_huggingface_tokenizer,
     _zephon_dataloader_checkpoint_path,
+    _zephon_tokenizer_id_from_args,
     apply_zephon_runtime_overrides,
     load_zephon_data_config,
     zephon_train_valid_test_datasets_provider,
@@ -101,6 +101,50 @@ def test_zephon_loader_maps_batches_to_megatron_schema() -> None:
     assert torch.equal(batch["labels"], torch.tensor([[2, 3, -100]]))
     assert torch.equal(batch["loss_mask"], torch.tensor([[1.0, 1.0, 0.0]]))
     assert torch.equal(batch["position_ids"], torch.tensor([[0, 1, 2]]))
+
+
+def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
+    pipeline = mock.MagicMock()
+    pipeline.tokenize.return_value = pipeline
+    pipeline.pack_flat.return_value = pipeline
+    pipeline.batch.return_value = pipeline
+    pipeline.options.return_value = pipeline
+    pipeline.__iter__.return_value = iter(())
+    dataset_type = mock.Mock()
+    dataset_type.from_path.return_value = object()
+    config = SimpleNamespace(
+        sources=(SimpleNamespace(name="source", path="data", fmt=None, weight=1.0),),
+        text_field="text",
+        cache_dir=None,
+        seed=42,
+        chunk_size=4,
+        canonical_replicas=1,
+        aggregate_dir=None,
+        run_id=None,
+        fetch_parallelism=None,
+    )
+
+    with mock.patch(
+        "megatron.training.datasets.zephon_dataloader._require_zephon",
+        return_value=(
+            mock.Mock(return_value=pipeline),
+            dataset_type,
+            mock.Mock(),
+            mock.Mock(),
+            mock.Mock(),
+        ),
+    ):
+        MegatronZephonDataLoader(
+            config,
+            tokenizer_id="example/tokenizer",
+            micro_batch_size=2,
+            sequence_length=16,
+            data_parallel_rank=0,
+            data_parallel_size=1,
+        )
+
+    assert pipeline.tokenize.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
+    assert "tokenizer" not in pipeline.tokenize.call_args.kwargs
 
 
 def test_runtime_options_use_data_parallel_coordination_identity() -> None:
@@ -279,7 +323,7 @@ def test_restore_state_rejects_malformed_opaque_checkpoint() -> None:
         loader.restore_state({"zephon": b"not-a-pickle"})
 
 
-def test_provider_uses_initialized_global_tokenizer() -> None:
+def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
     args = SimpleNamespace(
         eval_iters=0,
         context_parallel_size=1,
@@ -291,15 +335,13 @@ def test_provider_uses_initialized_global_tokenizer() -> None:
         zephon_run_id=None,
         micro_batch_size=2,
         seq_length=16,
+        tokenizer_type="HuggingFaceTokenizer",
+        tokenizer_model="example/tokenizer",
     )
-    tokenizer = object()
     loader = object()
 
     with (
         mock.patch("megatron.training.datasets.zephon_dataloader.get_args", return_value=args),
-        mock.patch(
-            "megatron.training.datasets.zephon_dataloader.get_tokenizer", return_value=tokenizer
-        ) as get_global_tokenizer,
         mock.patch(
             "megatron.training.datasets.zephon_dataloader.mpu.get_tensor_model_parallel_rank",
             return_value=0,
@@ -320,11 +362,19 @@ def test_provider_uses_initialized_global_tokenizer() -> None:
     ):
         result = zephon_train_valid_test_datasets_provider([])
 
-    get_global_tokenizer.assert_called_once_with()
-    assert loader_type.call_args.kwargs["tokenizer"] is tokenizer
+    assert loader_type.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
     assert result == (loader, None, None)
 
 
 def test_unsupported_tokenizer_type_is_rejected_clearly() -> None:
     with pytest.raises(ValueError, match="requires --tokenizer-type HuggingFaceTokenizer"):
-        _unwrap_huggingface_tokenizer(object())
+        _zephon_tokenizer_id_from_args(
+            SimpleNamespace(tokenizer_type="TikTokenizer", tokenizer_model="example/tokenizer")
+        )
+
+
+def test_missing_zephon_tokenizer_identifier_is_rejected_clearly() -> None:
+    with pytest.raises(ValueError, match="non-empty --tokenizer-model"):
+        _zephon_tokenizer_id_from_args(
+            SimpleNamespace(tokenizer_type="HuggingFaceTokenizer", tokenizer_model=None)
+        )

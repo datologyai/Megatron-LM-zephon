@@ -1,9 +1,11 @@
 # Zephon dataloader integration
 
 This opt-in reference integration replaces Megatron's GPT training dataloader
-with Zephon. Megatron continues to own model construction, tokenizer selection,
-optimization, distributed training, and model checkpoint coordination. The
-stock `pretrain_gpt.py` path remains unchanged.
+with Zephon. Megatron continues to own model construction, model-facing
+tokenizer initialization, optimization, distributed training, and model
+checkpoint coordination. Zephon independently loads the tokenizer used by its
+data pipeline from Megatron's `--tokenizer-model` value. The stock
+`pretrain_gpt.py` path remains unchanged.
 
 For installation and copy-paste demonstrations, start with the
 [Zephon example guide](../examples/zephon/README.md).
@@ -25,6 +27,23 @@ implementations diverge only when they derive framework runtime topology,
 adapt a Zephon batch for the trainer, and attach Zephon state to the framework
 checkpoint API.
 
+### Tokenizer ownership tradeoff
+
+Megatron and Zephon deliberately construct separate tokenizer instances from
+the same Hugging Face model or local path. Megatron needs its instance for the
+model and framework lifecycle; Zephon owns the instance that performs online
+tokenization in its pipeline. Passing an identifier instead of Megatron's live
+tokenizer keeps the data pipeline self-contained and matches Zephon's native
+tokenizer setup.
+
+The cost is a second tokenizer load on each process that constructs the Zephon
+loader. It also makes configuration agreement an integration invariant: use
+tokenizer assets whose checked-in Hugging Face configuration completely
+describes the intended vocabulary and special tokens, and do not rely on
+Megatron-only tokenizer mutations or loading flags. This is a reference-design
+choice, not a general requirement; an integration that prioritizes minimizing
+startup work could instead adapt and inject the framework's existing tokenizer.
+
 Megatron preserves the Zephon batch as tensors shaped
 `[micro_batch_size, sequence_length]` and derives `tokens`, `labels`,
 `loss_mask`, `position_ids`, and the optional attention mask expected by its GPT
@@ -43,9 +62,10 @@ This reference path supports online raw text only. For training it:
    seed, `exhausted_policy="repeat"`, shard and within-shard shuffling enabled,
    and a bare `TokenEstimation()`.
 4. Optionally applies recipe-controlled fetch parallelism.
-5. Tokenizes the configured text field with Megatron's Hugging Face tokenizer,
-   splits long samples, adds the shared special-token policy, and does not emit
-   tokenizer attention masks.
+5. Gives Zephon Megatron's `--tokenizer-model` identifier so Zephon loads its
+   own Hugging Face tokenizer, tokenizes the configured text field, splits long
+   samples, adds the shared special-token policy, and does not emit tokenizer
+   attention masks.
 6. Packs with `pack_flat(max_length=sequence_length + 1, algorithm="wrap",
    emit_positions=True)`.
 7. Batches with Megatron's microbatch size and `drop_last=True`.
@@ -127,6 +147,7 @@ canonical TP0/PP0, non-expert-qualified directory on both save and restore.
 | Long samples | Split | Preserve usable tokens instead of truncating the record. |
 | Packing | Wrap, with positions | Produce complete fixed-length GPT sequences. |
 | Attention mask | Not emitted by tokenizer | Megatron constructs the trainer batch according to its own attention-mask settings. |
+| Tokenizer lifecycle | Zephon loads its own instance from `--tokenizer-model` | Keep pipeline setup self-contained at the cost of a deliberate second load. |
 | Checkpoint state | Opaque Zephon object | Preserve the complete public Zephon checkpoint through Megatron's checkpoint lifecycle. |
 
 Runtime rank, world-size, and framework options are Megatron concerns rather

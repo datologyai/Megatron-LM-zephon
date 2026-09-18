@@ -22,16 +22,24 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_RECIPE = REPO_ROOT / "examples" / "zephon" / "elastic_local_jsonl.toml"
 
 
-class TinyTokenizer:
-    """Small deterministic Hugging Face-compatible tokenizer for the demo."""
+def _write_demo_tokenizer(path: Path) -> None:
+    """Create small local Hugging Face assets for Zephon to load independently."""
 
-    bos_token_id = 1
-    eos_token_id = 2
-    pad_token_id = 0
+    from tokenizers import Tokenizer, models, pre_tokenizers
+    from transformers import PreTrainedTokenizerFast
 
-    def __call__(self, texts: list[str], **_kwargs: Any) -> dict[str, list[list[int]]]:
-        tokens = [[3 + (ord(character) % 29) for character in text] for text in texts]
-        return {"input_ids": tokens, "attention_mask": [[1] * len(sequence) for sequence in tokens]}
+    backend = Tokenizer(
+        models.WordLevel({"<pad>": 0, "<s>": 1, "</s>": 2, "<unk>": 3}, unk_token="<unk>")
+    )
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        bos_token="<s>",
+        eos_token="</s>",
+        unk_token="<unk>",
+        pad_token="<pad>",
+    )
+    tokenizer.save_pretrained(path)
 
 
 def _find_free_local_port() -> int:
@@ -98,7 +106,7 @@ def _worker(args: argparse.Namespace) -> None:
     )
     loader = MegatronZephonDataLoader(
         config,
-        tokenizer=SimpleNamespace(tokenizer=TinyTokenizer()),
+        tokenizer_id=str(args.tokenizer_id),
         micro_batch_size=args.micro_batch_size,
         sequence_length=args.sequence_length,
         data_parallel_rank=rank,
@@ -137,6 +145,7 @@ def _run_phase(
     run_id: str,
     sequence_length: int,
     micro_batch_size: int,
+    tokenizer_id: Path,
 ) -> None:
     torchrun = Path(sys.executable).with_name("torchrun")
     command = [
@@ -161,6 +170,8 @@ def _run_phase(
         str(sequence_length),
         "--micro-batch-size",
         str(micro_batch_size),
+        "--tokenizer-id",
+        str(tokenizer_id),
     ]
     env = os.environ | {"GLOO_SOCKET_IFNAME": "lo0" if sys.platform == "darwin" else "lo"}
     result = subprocess.run(
@@ -220,10 +231,13 @@ def _run_demo(args: argparse.Namespace, work_dir: Path) -> bool:
     )
     reference_dir = work_dir / "reference"
     elastic_dir = work_dir / "elastic"
+    tokenizer_id = work_dir / "tokenizer"
+    _write_demo_tokenizer(tokenizer_id)
     shared = {
         "recipe": args.recipe,
         "sequence_length": args.sequence_length,
         "micro_batch_size": args.micro_batch_size,
+        "tokenizer_id": tokenizer_id,
     }
     _run_phase(
         phase="reference",
@@ -296,6 +310,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--output-dir", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--run-id", help=argparse.SUPPRESS)
+    parser.add_argument("--tokenizer-id", type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 

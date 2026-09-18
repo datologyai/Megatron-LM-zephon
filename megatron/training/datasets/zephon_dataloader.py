@@ -14,7 +14,7 @@ from typing import Any, Mapping, Sequence
 import torch
 
 from megatron.core import mpu
-from megatron.training import get_args, get_tokenizer, print_rank_0
+from megatron.training import get_args, print_rank_0
 from megatron.training.checkpointing import get_dataloader_checkpoint_name
 
 
@@ -163,16 +163,16 @@ def _require_zephon() -> tuple[Any, Any, Any, Any, Any]:
     return Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource, TokenEstimation
 
 
-def _unwrap_huggingface_tokenizer(tokenizer: Any) -> Any:
-    """Return the raw Hugging Face tokenizer from current or legacy Megatron wrappers."""
+def _zephon_tokenizer_id_from_args(args: Any) -> str:
+    """Return the tokenizer identifier that Zephon should load independently."""
 
-    tokenizer_adapter = getattr(tokenizer, "_tokenizer", tokenizer)
-    hf_tokenizer = getattr(tokenizer_adapter, "tokenizer", None)
-    if hf_tokenizer is None:
+    if args.tokenizer_type != "HuggingFaceTokenizer":
         raise ValueError(
-            "Zephon GPT pretraining currently requires --tokenizer-type " "HuggingFaceTokenizer"
+            "Zephon GPT pretraining currently requires --tokenizer-type HuggingFaceTokenizer"
         )
-    return hf_tokenizer
+    if not isinstance(args.tokenizer_model, str) or not args.tokenizer_model:
+        raise ValueError("Zephon GPT pretraining requires a non-empty --tokenizer-model")
+    return args.tokenizer_model
 
 
 class MegatronZephonDataLoader:
@@ -182,14 +182,13 @@ class MegatronZephonDataLoader:
         self,
         config: ZephonDataConfig,
         *,
-        tokenizer: Any,
+        tokenizer_id: str,
         micro_batch_size: int,
         sequence_length: int,
         data_parallel_rank: int,
         data_parallel_size: int,
     ) -> None:
         Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource, TokenEstimation = _require_zephon()
-        hf_tokenizer = _unwrap_huggingface_tokenizer(tokenizer)
 
         canonical_replicas = config.canonical_replicas or data_parallel_size
         if canonical_replicas < data_parallel_size:
@@ -225,7 +224,7 @@ class MegatronZephonDataLoader:
 
         self._pipeline = (
             pipeline.tokenize(
-                tokenizer=hf_tokenizer,
+                tokenizer_id=tokenizer_id,
                 field=config.text_field,
                 add_attention_mask=False,
                 max_length=sequence_length + 1,
@@ -338,10 +337,9 @@ def zephon_train_valid_test_datasets_provider(
         return None, None, None
 
     config = apply_zephon_runtime_overrides(load_zephon_data_config(args.zephon_data_config), args)
-    tokenizer = get_tokenizer()
     loader = MegatronZephonDataLoader(
         config,
-        tokenizer=tokenizer,
+        tokenizer_id=_zephon_tokenizer_id_from_args(args),
         micro_batch_size=args.micro_batch_size,
         sequence_length=args.seq_length,
         data_parallel_rank=mpu.get_data_parallel_rank(),
