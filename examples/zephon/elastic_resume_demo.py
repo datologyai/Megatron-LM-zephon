@@ -153,9 +153,10 @@ def _run_phase(
     micro_batch_size: int,
     tokenizer_id: Path,
 ) -> None:
-    torchrun = Path(sys.executable).with_name("torchrun")
     command = [
-        str(torchrun),
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
         "--nnodes=1",
         f"--nproc-per-node={num_workers}",
         "--master-addr=127.0.0.1",

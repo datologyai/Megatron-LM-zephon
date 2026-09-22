@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026, DatologyAI. All rights reserved.
 
+# End-to-end GPU smoke test: train, checkpoint the model and Zephon stream,
+# resume with a configurable GPU count, and complete one additional step.
+
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -12,6 +15,8 @@ total_steps=${TOTAL_STEPS:-3}
 canonical_replicas=${CANONICAL_REPLICAS:-2}
 run_id=${ZEPHON_RUN_ID:-zephon-training-smoke}
 tokenizer_model=${TOKENIZER_MODEL:-EleutherAI/gpt-neox-20b}
+python_bin=${PYTHON:-python3}
+extra_args=("${@:2}")
 
 if [[ -e "${dump_folder}" ]]; then
     echo "Refusing to reuse existing output: ${dump_folder}" >&2
@@ -66,13 +71,17 @@ common_args=(
 )
 
 echo "Phase 1: train ${first_phase_steps} steps with ${first_phase_gpus} GPU(s)"
-python3 -m torch.distributed.run --nproc-per-node "${first_phase_gpus}" pretrain_gpt_zephon.py \
+"${python_bin}" -m torch.distributed.run \
+    --nproc-per-node "${first_phase_gpus}" pretrain_gpt_zephon.py \
     "${common_args[@]}" \
+    "${extra_args[@]}" \
     --train-iters "${first_phase_steps}"
 
 echo "Phase 2: resume through step ${total_steps} with ${second_phase_gpus} GPU(s)"
-python3 -m torch.distributed.run --nproc-per-node "${second_phase_gpus}" pretrain_gpt_zephon.py \
+"${python_bin}" -m torch.distributed.run \
+    --nproc-per-node "${second_phase_gpus}" pretrain_gpt_zephon.py \
     "${common_args[@]}" \
+    "${extra_args[@]}" \
     --load "${dump_folder}/model" \
     --override-opt-param-scheduler \
     --train-iters "${total_steps}"

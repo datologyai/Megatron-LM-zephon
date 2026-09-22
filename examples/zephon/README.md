@@ -65,6 +65,23 @@ Set `TOKENIZER_MODEL` to a local Hugging Face tokenizer directory to avoid a
 download. `FIRST_PHASE_GPUS`, `SECOND_PHASE_GPUS`, `CANONICAL_REPLICAS`, and
 `ZEPHON_RUN_ID` configure the two phases.
 
+Additional Megatron arguments may follow the output path. For example, a fixed
+TP=2 smoke test is:
+
+```bash
+FIRST_PHASE_GPUS=2 SECOND_PHASE_GPUS=2 \
+  examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke-tp2 \
+  --tensor-model-parallel-size 2
+```
+
+A fixed PP=2 smoke test is:
+
+```bash
+FIRST_PHASE_GPUS=2 SECOND_PHASE_GPUS=2 \
+  examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke-pp2 \
+  --pipeline-model-parallel-size 2
+```
+
 ## Configure data
 
 Copy `local_jsonl.toml` and replace its sources:
@@ -175,6 +192,13 @@ uv run python -m torch.distributed.run --nproc-per-node 8 -m pytest -q \
 
 Then run both CPU elastic directions and the GPU smoke configurations relevant
 to the topology being claimed.
+
+| Topology | Required evidence |
+| --- | --- |
+| DP 2 -> 1 and DP 1 -> 2, TP=PP=EP=1 | Exact global-step match from the CPU data-only demo. |
+| DP 1 -> 1, TP=PP=EP=1 | Model and dataloader checkpoint/resume through the GPU smoke test. |
+| TP=2 or PP=2 with fixed DP | Successful GPU trainer checkpoint/resume; unit contracts alone are insufficient. |
+| EP>1 with fixed DP | Save/restore path symmetry plus a GPU trainer run before support is claimed. |
 
 The current reference path does not implement validation or test loaders,
 context parallelism greater than one, pretokenized/prepacked input, batch-size

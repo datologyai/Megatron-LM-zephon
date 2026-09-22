@@ -160,10 +160,7 @@ def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> Zepho
 
 
 def _build_zephon_runtime_options(
-    config: ZephonDataConfig,
-    *,
-    data_parallel_rank: int,
-    data_parallel_size: int,
+    config: ZephonDataConfig, *, data_parallel_rank: int, data_parallel_size: int
 ) -> dict[str, Any]:
     """Build Zephon coordination options for the ranks that own distinct data streams."""
 
@@ -184,9 +181,7 @@ def _build_zephon_runtime_options(
     if config.cache_dir is not None:
         options["io_options"] = StoreOptions(
             cache=CacheOptions(
-                enabled=True,
-                root=config.cache_dir,
-                limit_bytes=config.cache_limit_bytes,
+                enabled=True, root=config.cache_dir, limit_bytes=config.cache_limit_bytes
             )
         )
     if config.aggregate_dir is not None:
@@ -264,34 +259,28 @@ class MegatronZephonDataLoader:
         pipeline = Pipeline(work_source)
         if config.prefetch_buffer_size:
             pipeline = pipeline.prefetch(
-                buffer_size=config.prefetch_buffer_size,
-                parallelism=config.prefetch_parallelism,
+                buffer_size=config.prefetch_buffer_size, parallelism=config.prefetch_parallelism
             )
         if config.fetch_parallelism is not None:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
 
         options = _build_zephon_runtime_options(
-            config,
-            data_parallel_rank=data_parallel_rank,
-            data_parallel_size=data_parallel_size,
+            config, data_parallel_rank=data_parallel_rank, data_parallel_size=data_parallel_size
         )
 
-        self._pipeline = (
-            pipeline.tokenize(
-                tokenizer_id=tokenizer_id,
-                field=config.text_field,
-                add_attention_mask=False,
-                max_length=sequence_length + 1,
-                split_long_samples=True,
-                special_tokens="bos_eos",
-                parallelism=config.tokenize_parallelism,
-            )
-            .pack_flat(
-                max_length=sequence_length + 1,
-                algorithm="wrap",
-                emit_positions=True,
-                parallelism=config.pack_parallelism,
-            )
+        self._pipeline = pipeline.tokenize(
+            tokenizer_id=tokenizer_id,
+            field=config.text_field,
+            add_attention_mask=False,
+            max_length=sequence_length + 1,
+            split_long_samples=True,
+            special_tokens="bos_eos",
+            parallelism=config.tokenize_parallelism,
+        ).pack_flat(
+            max_length=sequence_length + 1,
+            algorithm="wrap",
+            emit_positions=True,
+            parallelism=config.pack_parallelism,
         )
         if config.shuffle_after_pack:
             self._pipeline = self._pipeline.shuffle(
@@ -334,7 +323,10 @@ class MegatronZephonDataLoader:
             restored_checkpoint = pickle.loads(checkpoint)
         except (pickle.PickleError, EOFError, AttributeError, ImportError, IndexError) as exc:
             raise ValueError("Unable to deserialize Zephon checkpoint state") from exc
-        self._pipeline.restore(restored_checkpoint)
+        try:
+            self._pipeline.restore(restored_checkpoint)
+        except Exception as exc:
+            raise ValueError("Zephon checkpoint state is malformed or incompatible") from exc
         self._iterator = iter(self._pipeline)
 
 

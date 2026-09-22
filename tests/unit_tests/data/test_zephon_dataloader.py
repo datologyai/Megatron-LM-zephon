@@ -1,5 +1,6 @@
 # Copyright (c) 2026, DatologyAI. All rights reserved.
 
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -33,6 +34,7 @@ def test_load_zephon_data_config(tmp_path: Path) -> None:
     ]
     assert config.sources[0].path == str(repo_root / "tests/assets/zephon_mixture/prose")
     assert config.chunk_size == 4
+    assert ZephonDataConfig(sources=()).chunk_size == 16_384
 
     invalid_recipes = {
         "duplicate.toml": (
@@ -119,14 +121,11 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
     dataset_type = mock.Mock()
     dataset_type.from_path.return_value = object()
     config = ZephonDataConfig(
-        sources=(ZephonSource(name="source", path="data"),),
-        canonical_replicas=1,
+        sources=(ZephonSource(name="source", path="data"),), canonical_replicas=1
     )
 
     with (
-        mock.patch(
-            "megatron.training.datasets.zephon_dataloader.Pipeline", return_value=pipeline
-        ),
+        mock.patch("megatron.training.datasets.zephon_dataloader.Pipeline", return_value=pipeline),
         mock.patch("megatron.training.datasets.zephon_dataloader.Dataset", dataset_type),
         mock.patch("megatron.training.datasets.zephon_dataloader.MixtureSpec"),
         mock.patch("megatron.training.datasets.zephon_dataloader.StaticMixtureWorkSource"),
@@ -170,11 +169,7 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
             side_effect=lambda **values: ("store", values),
         ),
     ):
-        options = _build_zephon_runtime_options(
-            config,
-            data_parallel_rank=2,
-            data_parallel_size=4,
-        )
+        options = _build_zephon_runtime_options(config, data_parallel_rank=2, data_parallel_size=4)
 
     assert options == {
         "deterministic": True,
@@ -187,12 +182,7 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         "canonical_replicas": 8,
         "io_options": (
             "store",
-            {
-                "cache": (
-                    "cache",
-                    {"enabled": True, "root": "/cache", "limit_bytes": 123},
-                )
-            },
+            {"cache": ("cache", {"enabled": True, "root": "/cache", "limit_bytes": 123})},
         ),
         "aggregate_dir": "/aggregate",
         "run_id": "run",
@@ -207,16 +197,10 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
     ],
 )
 def test_loader_rejects_invalid_elastic_alignment(
-    canonical_replicas: int,
-    data_parallel_size: int,
-    num_batches_per_train_step: int,
-    message: str,
+    canonical_replicas: int, data_parallel_size: int, num_batches_per_train_step: int, message: str
 ) -> None:
     config = SimpleNamespace(
-        sources=(),
-        canonical_replicas=canonical_replicas,
-        aggregate_dir="/aggregate",
-        run_id="run",
+        sources=(), canonical_replicas=canonical_replicas, aggregate_dir="/aggregate", run_id="run"
     )
 
     with pytest.raises(ValueError, match=message):
@@ -381,6 +365,11 @@ def test_restore_state_rejects_malformed_opaque_checkpoint() -> None:
     with pytest.raises(ValueError, match="Unable to deserialize"):
         loader.restore_state({"zephon": b"not-a-pickle"})
 
+    loader._pipeline = mock.Mock()
+    loader._pipeline.restore.side_effect = RuntimeError("incompatible")
+    with pytest.raises(ValueError, match="malformed or incompatible"):
+        loader.restore_state({"zephon": pickle.dumps({"state": 1})})
+
 
 def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
     args = SimpleNamespace(
@@ -415,8 +404,7 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
             return_value=2,
         ),
         mock.patch(
-            "megatron.training.datasets.zephon_dataloader.get_num_microbatches",
-            return_value=2,
+            "megatron.training.datasets.zephon_dataloader.get_num_microbatches", return_value=2
         ),
         mock.patch(
             "megatron.training.datasets.zephon_dataloader.MegatronZephonDataLoader",
