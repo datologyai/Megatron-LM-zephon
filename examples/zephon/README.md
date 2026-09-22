@@ -1,44 +1,31 @@
 # Zephon + Megatron-LM
 
-This example replaces Megatron's GPT training dataloader with Zephon while
-leaving model construction, model-facing tokenizer selection, optimization,
-distributed training, and model checkpointing in Megatron. Zephon independently
-loads the data-pipeline tokenizer from the same `--tokenizer-model` value. The
-example demonstrates token-aware source mixtures, deterministic
-checkpoint/resume, and an elastic resume at a different data-parallel degree.
+This example replaces Megatron's GPT training dataloader with a Zephon
+pipeline. Megatron continues to own model construction, optimization,
+distributed training, and model checkpoint coordination. Zephon is opt-in;
+the stock `pretrain_gpt.py` path is unchanged.
 
-The stock `pretrain_gpt.py` path is unchanged. Zephon training uses the opt-in
-`pretrain_gpt_zephon.py` entry point.
-
-## Prerequisites
-
-- Linux for GPU training; the data-only elastic demo also runs on macOS.
-- A working Megatron development environment. The full smoke test is intended
-  for the Megatron development container.
-- `uv` and Python 3.12 for clean-environment validation.
-- GitHub access to the private `datologyai/zephon` repository until Zephon has
-  a public distribution.
-- Two CUDA GPUs for the complete topology-change demonstration, or one CUDA GPU
-  for a checkpoint/resume smoke test without a physical DP resize.
+For Zephon concepts and API details, use the
+[Zephon User Guide](https://datologyai.github.io/zephon/). This page covers the
+Megatron adapter and its runnable examples.
 
 ## Install
 
-From the repository root, install the Zephon release pinned for this integration:
+Create a normal Megatron development environment, then install the current
+Zephon `main` branch used by this integration:
 
 ```bash
 uv pip install -r requirements-zephon.txt
 ```
 
-The pin currently resolves through the private Zephon GitHub repository and
-uses your normal Git credentials. To validate a local release candidate instead,
-set `ZEPHON_WHEEL=/path/to/zephon.whl` when running the clean-environment
-validation script. For active Zephon development, install a sibling checkout
-with `uv pip install -e /path/to/zephon`.
+The dependency currently resolves through the private `datologyai/zephon`
+repository and requires GitHub access. For active Zephon development, install
+a sibling checkout with `uv pip install -e /path/to/zephon`.
 
-## Quick verification: CPU elastic demo
+## CPU data-only elastic demo
 
-The fastest end-to-end check exercises the real Zephon pipeline and checkpoint
-state without training a model:
+`elastic_resume_demo.py` tests the dataloader stream and checkpoint without
+constructing or training a model:
 
 ```bash
 uv run --no-sync python examples/zephon/elastic_resume_demo.py
@@ -46,125 +33,93 @@ uv run --no-sync python examples/zephon/elastic_resume_demo.py \
   --initial-workers 1 --resume-workers 2
 ```
 
-The first command covers DP 2-to-1 and the second covers DP 1-to-2. Each creates
-an uninterrupted reference stream, checkpoints a second stream after two global
-steps, resumes under the requested worker count, and compares all fields in the
-Megatron GPT batches. Lane-to-worker assignment may reorder batches after the
-topology change, so comparison is order-independent within each global step.
-Success ends with `Exact global-step match: YES`.
+The two commands cover DP 2 -> 1 and DP 1 -> 2. Each compares an uninterrupted
+stream with a stream restored after two global steps. Lane assignment can
+change after a resize, so batches are compared without regard to order inside
+each global step. Use `--work-dir PATH` to retain the generated checkpoint and
+stream records.
 
-Pass `--work-dir PATH` to retain the checkpoint and the raw, emitted-order JSON
-stream records for diagnosis.
+Each demo worker selects the inline runner with MTP disabled because the demo
+tests stream correctness, not nested process orchestration. The GPU smoke test
+uses the production process-runner and automatic-MTP defaults.
 
-## Run the full GPU demo
+## GPU trainer checkpoint smoke test
 
-On a Linux machine with two CUDA GPUs, run:
+`run_training_smoke.sh` trains a tiny GPT model through step 2, saves the model
+and Zephon stream, restores with a configurable GPU count, and completes step
+3:
 
 ```bash
 examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
 ```
 
-Use a new output path for every invocation. The script runs a complete tiny-GPT
-recipe in two phases:
-
-1. Train through step 2 on two GPUs and save Megatron model and Zephon
-   dataloader checkpoints.
-2. Restore the latest completed checkpoint on one GPU and train step 3 with the
-   same canonical lanes and logical global batch.
-
-The final line is:
-
-```text
-Zephon training checkpoint/resume smoke test passed: ./outputs/zephon-training-smoke
-```
-
-The default tokenizer is `EleutherAI/gpt-neox-20b`. Set `TOKENIZER_MODEL` to a
-local Hugging Face tokenizer directory to avoid downloading it:
+Use a new output path for each run. The default topology is two GPUs to one
+GPU. A single-GPU checkpoint/resume run is:
 
 ```bash
-TOKENIZER_MODEL=/path/to/tokenizer \
-  examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke
-```
-
-On a single-GPU development box, run:
-
-```bash
-FIRST_PHASE_GPUS=1 \
+FIRST_PHASE_GPUS=1 SECOND_PHASE_GPUS=1 \
   examples/zephon/run_training_smoke.sh ./outputs/zephon-training-smoke-1gpu
 ```
 
-That exercises model and dataloader checkpoint/resume but does not demonstrate
-a physical data-parallel resize.
+Set `TOKENIZER_MODEL` to a local Hugging Face tokenizer directory to avoid a
+download. `FIRST_PHASE_GPUS`, `SECOND_PHASE_GPUS`, `CANONICAL_REPLICAS`, and
+`ZEPHON_RUN_ID` configure the two phases.
 
-## What the demo does
-
-1. Loads two raw-text JSONL sources from the checked-in TOML recipe.
-2. Passes the configured 3:1 weights to Zephon as token proportions.
-3. Uses bare `TokenEstimation()` to calibrate online source allocation.
-4. Lets Zephon load its own Hugging Face tokenizer from Megatron's configured
-   tokenizer model, then splits long records and packs fixed-length sequences
-   online.
-5. Converts each Zephon batch into Megatron's GPT tensor dictionary while
-   preserving `[micro_batch_size, sequence_length]`.
-6. Saves Zephon stream state beside the corresponding completed Megatron
-   checkpoint.
-7. Restores the logical stream after changing the physical worker count.
-
-Zephon checkpoint aggregation is coordinated only across distinct DP streams.
-TP/PP replicas are not independent contributors: Megatron broadcasts the TP0
-batch to other TP ranks, equivalent PP streams share the DP identity, and only
-TP0/PP0 invokes `save_state()`. Resume always reads the complete checkpoint
-owned on disk by DP rank 0. Missing, malformed, or wrong-iteration dataloader
-state fails the requested resume instead of starting a fresh stream.
-
-For the exact pipeline and checkpoint contract, see the
-[integration reference](../../docs/zephon.md).
-
-## Use your own data
+## Configure data
 
 Copy `local_jsonl.toml` and replace its sources:
 
 ```toml
 text_field = "text"
+cache_dir = "/local-ssd/zephon"
+cache_limit_bytes = 536870912000
 seed = 42
-chunk_size = 4
+chunk_size = 16384
+shuffle_block_size = "auto"
+tokenize_parallelism = 8
+pack_parallelism = 8
 
 [[sources]]
 name = "web"
-path = "/data/web"
+path = "s3://example-bucket/web"
 fmt = "parquet"
 weight = 3.0
 
 [[sources]]
 name = "code"
-path = "/data/code"
-fmt = "jsonl"
+path = "hf://organization/code/train"
 weight = 1.0
 ```
 
-Relative paths are resolved from the recipe directory. Omit `fmt` to use
-Zephon's format detection. Weights are relative token proportions: `3.0` and
-`1.0` request a 75/25 token mixture. The integration passes them unchanged to
-`MixtureSpec`; Zephon normalizes them.
+Relative paths are resolved from the recipe directory. Source weights are
+relative token proportions when `token_estimation = true`, which is the
+training default. Zephon normalizes the weights.
 
-Training always uses bare `TokenEstimation()`. There are no estimator tuning
-knobs in the recipe and no post-tokenization `ensure_mixture()` operation.
-Megatron supplies the tokenizer model identifier, sequence length, and
-microbatch size, so those settings stay in Megatron's launch configuration.
-Megatron and Zephon each load a tokenizer instance from that identifier. Keep
-the Hugging Face tokenizer assets unchanged across resume, and do not depend on
-Megatron-only tokenizer mutations or loading flags for this reference path.
+The scheduling controls are independent:
 
-For elastic training, start from `elastic_local_jsonl.toml`. Keep the recipe,
-canonical replica count, aggregate directory, run ID, tokenizer, sequence
-length, seed, and logical global batch unchanged across the resume. The physical
-data-parallel degree may change.
+- `shuffle_shards` and `shuffle_within_shard` control source ordering.
+- `shuffle_block_size` accepts `"auto"`, `"global"`, or a positive integer.
+- `token_estimation` chooses token-aware rather than record-aware proportions.
+- `repeat` controls source exhaustion.
+- `shuffle_after_pack` controls the shuffle over packed sequences;
+  `shuffle_buffer_size` and `shuffle_parallelism` tune that stage.
 
-## Advanced: launch the entry point directly
+Shard prefetch is off by default. Set `prefetch_buffer_size` and optionally
+`prefetch_parallelism` for remote datasets. `fetch_parallelism`,
+`tokenize_parallelism`, and `pack_parallelism` tune the individual stages. The
+default runner is `"process"`; leaving `mtp_mode` unset enables MTP for this
+tokenize-and-pack pipeline.
 
-The smoke script is the canonical complete launch. For an existing Megatron GPT
-configuration, replace `pretrain_gpt.py` with `pretrain_gpt_zephon.py`, remove
-stock data-path arguments, and add:
+Megatron supplies the tokenizer identifier, sequence length, and microbatch
+size, so those settings stay in Megatron's launch configuration. Zephon loads
+its own tokenizer instance from the same `--tokenizer-model` value. Keep those
+tokenizer assets unchanged across resume and do not depend on Megatron-only
+tokenizer mutations for this reference path.
+
+## Launch the entry point directly
+
+Replace `pretrain_gpt.py` with `pretrain_gpt_zephon.py`, remove stock data-path
+arguments, and add:
 
 ```text
 --zephon-data-config /path/to/recipe.toml
@@ -175,38 +130,52 @@ stock data-path arguments, and add:
 --context-parallel-size 1
 ```
 
-Elastic launches also require a stable `--zephon-canonical-replicas`,
-`--zephon-aggregate-dir`, and `--zephon-run-id`. All model, optimizer, batch,
-tokenizer, distributed, save, and load arguments remain normal Megatron
-arguments. Resume only from a completed model checkpoint and use the matching
-dataloader checkpoint directory.
+Elastic launches also require stable `--zephon-canonical-replicas`,
+`--zephon-aggregate-dir`, and `--zephon-run-id` values. The canonical lane
+count must be divisible by every supported DP degree, and every optimizer step
+must consume a whole number of canonical lane windows. Batch-size ramp-up is
+not supported by this reference integration.
+
+Keep the recipe, tokenizer, sequence length, seed, logical global batch,
+canonical lane count, aggregate directory, and run ID unchanged across resume.
+The physical data-parallel degree may change. Resume only from a completed
+model checkpoint with the corresponding dataloader checkpoint directory.
+
+## Integration contract
+
+The adapter supports online raw text and fixed-length GPT pretraining. It:
+
+1. Builds each source with `Dataset.from_path` and passes source weights
+   unchanged to `MixtureSpec`.
+2. Tokenizes and wraps packed sequences online with Zephon.
+3. Uses `SampleBatch.to_training()` to create next-token labels while
+   preserving Megatron tensors shaped `[micro_batch_size, sequence_length]`.
+4. Derives `loss_mask` from the labels and passes positions through to the GPT
+   trainer.
+5. Stores Zephon's complete public checkpoint object beside the corresponding
+   completed Megatron checkpoint.
+
+Zephon coordination represents distinct data streams: DP size and DP rank are
+used for its world and rank identity. Megatron broadcasts the TP0 batch to
+other TP ranks, equivalent pipeline stages share the DP identity, and only the
+canonical TP0/PP0 participant writes the dataloader checkpoint. Every active
+DP rank restores the complete checkpoint owned on disk by DP rank 0.
 
 ## Validate the integration
 
-Run the focused adapter test:
+Run the focused adapter and checkpoint tests inside the Megatron development
+container:
 
 ```bash
-uv run pytest -q tests/unit_tests/data/test_zephon_dataloader.py
+uv run python -m torch.distributed.run --nproc-per-node 8 -m pytest -q \
+  tests/unit_tests/data/test_zephon_dataloader.py
+uv run python -m torch.distributed.run --nproc-per-node 8 -m pytest -q \
+  tests/unit_tests/test_checkpointing.py -k maybe_save_dataloader_state
 ```
 
-With access to the private Zephon release, validate installation and runtime
-behavior in a fresh temporary environment:
+Then run both CPU elastic directions and the GPU smoke configurations relevant
+to the topology being claimed.
 
-```bash
-scripts/validate_zephon_install.sh
-```
-
-The precise validation matrix is:
-
-| Topology | Validation status |
-| --- | --- |
-| DP 2 -> 1, TP=PP=EP=1 | Real Zephon CPU demo passes with an exact global-step match. |
-| DP 1 -> 2, TP=PP=EP=1 | Real Zephon CPU demo passes with an exact global-step match. |
-| DP 1 -> 1, TP=PP=EP=1 | Existing one-GPU trainer smoke passed; not rerun for this change. |
-| TP=2 and/or PP=2, fixed DP | DP-scoped Zephon identity and Megatron broadcast/checkpoint participation are unit-tested; no multi-GPU trainer run yet. |
-| EP>1, fixed DP | Save/restore filename symmetry is unit-tested; no multi-GPU trainer run yet. |
-
-The initial reference integration supports online raw text, fixed-length GPT
-pretraining, Hugging Face tokenizers, and context parallel size 1. Validation
-and test loaders are not implemented; use `--eval-iters 0`. Elastic TP/PP/EP
-changes and arbitrary mixed model-parallel topologies have not been validated.
+The current reference path does not implement validation or test loaders,
+context parallelism greater than one, pretokenized/prepacked input, batch-size
+ramp-up, or elastic TP/PP/EP changes.

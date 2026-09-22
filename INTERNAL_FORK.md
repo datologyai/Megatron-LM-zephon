@@ -6,9 +6,9 @@ The intended end state is a public reference integration that demonstrates how
 to replace an existing framework dataloader without changing its model or
 training stack.
 
-User documentation belongs in the [Zephon example guide](examples/zephon/README.md)
-and [integration reference](docs/zephon.md). This file is for maintainers of the
-fork.
+User documentation belongs in the
+[Zephon example guide](examples/zephon/README.md). This file is only for
+maintainers of the fork.
 
 ## Repository policy
 
@@ -26,22 +26,12 @@ fork.
 ## Continuous integration
 
 The upstream NVIDIA GitHub and GitLab pipelines are not used here. `Zephon CI`
-runs only when the integration adapter, examples, fixtures, tests, dependency
-pin, validation script, or workflow changes. It provides formatting and lint
-checks plus adapter tests that do not require the private Zephon package.
-
-While Zephon is private, run the release-facing validation locally from the
-Megatron development environment with GitHub access to `datologyai/zephon`:
-
-```bash
-scripts/validate_zephon_install.sh
-```
-
-The script builds a clean temporary environment, installs the pinned Zephon
-release, runs the focused adapter test, and executes the CPU elastic demo. Set
-`ZEPHON_WHEEL=/path/to/zephon.whl` to validate a release candidate wheel.
-Hosted CI deliberately has no private package credential. Once Zephon is
-public, enable the same release-facing validation there. This fork has no
+runs only when the integration adapter, examples, fixtures, tests, dependency,
+or workflow changes. It provides formatting and lint checks plus adapter tests
+that do not require the private Zephon package. Runtime validation against
+Zephon `main` uses the commands in the example guide. Hosted CI deliberately
+has no private package credential. Once Zephon is public, enable the same
+release-facing validation there. This fork has no
 scheduled, release, Slack, on-call, container-publishing, or NVIDIA-internal CI
 jobs.
 
@@ -64,8 +54,8 @@ Complete every item before changing the repository visibility to public.
 
 ### Dependency and access
 
-- [ ] Publish an approved public Zephon release and replace the private Git pin
-      in `requirements-zephon.txt` with its public installation source.
+- [ ] Publish an approved public Zephon release and replace the private Git
+      source in `requirements-zephon.txt` with its public installation source.
 - [ ] Confirm a clean machine without DatologyAI GitHub or package credentials
       can install every dependency used by the examples and tests.
 - [ ] Remove private package indexes, repository URLs, credentials, internal
@@ -93,8 +83,7 @@ Complete every item before changing the repository visibility to public.
 - [ ] Run the full GPU checkpoint/resume demo from a fresh clone, including a
       two-GPU to one-GPU topology change.
 - [ ] Verify all Markdown links, commands, paths, expected output, and current
-      limitations in `README.md`, `examples/zephon/README.md`, and
-      `docs/zephon.md`.
+      limitations in `README.md` and `examples/zephon/README.md`.
 - [ ] Ensure the Megatron and TorchTitan Zephon guides use the same terminology
       for recipes, token proportions, token estimation, packing, canonical
       lanes, and elastic-resume guarantees.

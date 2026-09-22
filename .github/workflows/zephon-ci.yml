@@ -9,7 +9,6 @@ on:
       - "megatron/training/datasets/zephon_dataloader.py"
       - "pretrain_gpt_zephon.py"
       - "requirements-zephon.txt"
-      - "scripts/validate_zephon_install.sh"
       - "tests/assets/zephon_mixture/**"
       - "tests/unit_tests/data/*zephon*"
       - "tests/unit_tests/test_checkpointing.py"
@@ -22,7 +21,6 @@ on:
       - "megatron/training/datasets/zephon_dataloader.py"
       - "pretrain_gpt_zephon.py"
       - "requirements-zephon.txt"
-      - "scripts/validate_zephon_install.sh"
       - "tests/assets/zephon_mixture/**"
       - "tests/unit_tests/data/*zephon*"
       - "tests/unit_tests/test_checkpointing.py"
@@ -66,7 +64,6 @@ jobs:
             megatron/training/datasets/zephon_dataloader.py \
             pretrain_gpt_zephon.py \
             tests/unit_tests/data/test_zephon_dataloader.py
-          bash -n scripts/validate_zephon_install.sh
 
   contract:
     name: Megatron adapter contract
