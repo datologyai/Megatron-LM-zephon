@@ -9,6 +9,7 @@ import torch
 
 from megatron.training.checkpointing import get_dataloader_checkpoint_name
 from megatron.training.datasets.zephon_dataloader import (
+    TOKENS_FIELD,
     MegatronZephonDataLoader,
     _build_zephon_runtime_options,
     _restore_dataloader_state,
@@ -85,6 +86,7 @@ def test_zephon_loader_maps_batches_to_megatron_schema() -> None:
     class FakeBatch:
         def to_training(self, **kwargs):
             assert kwargs["return_labels"] is True
+            assert kwargs["tokens_field"] == TOKENS_FIELD
             return {
                 "input_ids": torch.tensor([[1, 2, 3]]),
                 "labels": torch.tensor([[2, 3, -100]]),
@@ -109,6 +111,7 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
     pipeline.pack_flat.return_value = pipeline
     pipeline.batch.return_value = pipeline
     pipeline.options.return_value = pipeline
+    pipeline.preflight_tokenizers.return_value = None
     pipeline.__iter__.return_value = iter(())
     dataset_type = mock.Mock()
     dataset_type.from_path.return_value = object()
@@ -124,15 +127,14 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
         fetch_parallelism=None,
     )
 
-    with mock.patch(
-        "megatron.training.datasets.zephon_dataloader._require_zephon",
-        return_value=(
-            mock.Mock(return_value=pipeline),
-            dataset_type,
-            mock.Mock(),
-            mock.Mock(),
-            mock.Mock(),
+    with (
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.Pipeline", return_value=pipeline
         ),
+        mock.patch("megatron.training.datasets.zephon_dataloader.Dataset", dataset_type),
+        mock.patch("megatron.training.datasets.zephon_dataloader.MixtureSpec"),
+        mock.patch("megatron.training.datasets.zephon_dataloader.StaticMixtureWorkSource"),
+        mock.patch("megatron.training.datasets.zephon_dataloader.TokenEstimation"),
     ):
         MegatronZephonDataLoader(
             config,
@@ -145,6 +147,7 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
 
     assert pipeline.tokenize.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
     assert "tokenizer" not in pipeline.tokenize.call_args.kwargs
+    pipeline.preflight_tokenizers.assert_called_once_with()
 
 
 def test_runtime_options_use_data_parallel_coordination_identity() -> None:
@@ -156,8 +159,20 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         mock.patch("torch.distributed.is_initialized", return_value=True),
         mock.patch("torch.distributed.get_world_size", return_value=16),
         mock.patch("torch.distributed.get_rank", return_value=11),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.CacheOptions",
+            side_effect=lambda **values: ("cache", values),
+        ),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.StoreOptions",
+            side_effect=lambda **values: ("store", values),
+        ),
     ):
-        options = _build_zephon_runtime_options(config, data_parallel_rank=2, data_parallel_size=4)
+        options = _build_zephon_runtime_options(
+            config,
+            data_parallel_rank=2,
+            data_parallel_size=4,
+        )
 
     assert options == {
         "deterministic": True,
@@ -166,10 +181,45 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         "world_size": 4,
         "global_rank": 2,
         "canonical_replicas": 8,
-        "io_options": {"cache": {"enabled": True, "root": "/cache"}},
+        "io_options": (
+            "store",
+            {"cache": ("cache", {"enabled": True, "root": "/cache"})},
+        ),
         "aggregate_dir": "/aggregate",
         "run_id": "run",
     }
+
+
+@pytest.mark.parametrize(
+    ("canonical_replicas", "data_parallel_size", "num_batches_per_train_step", "message"),
+    [
+        (3, 2, 4, "divisible by the current data-parallel size"),
+        (4, 2, 6, "complete lane-window boundaries"),
+    ],
+)
+def test_loader_rejects_invalid_elastic_alignment(
+    canonical_replicas: int,
+    data_parallel_size: int,
+    num_batches_per_train_step: int,
+    message: str,
+) -> None:
+    config = SimpleNamespace(
+        sources=(),
+        canonical_replicas=canonical_replicas,
+        aggregate_dir="/aggregate",
+        run_id="run",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        MegatronZephonDataLoader(
+            config,
+            tokenizer_id="example/tokenizer",
+            micro_batch_size=1,
+            sequence_length=16,
+            data_parallel_rank=0,
+            data_parallel_size=data_parallel_size,
+            num_batches_per_train_step=num_batches_per_train_step,
+        )
 
 
 def test_dataloader_checkpoint_path_is_symmetric_with_pipeline_and_expert_parallelism(
@@ -327,6 +377,7 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
     args = SimpleNamespace(
         eval_iters=0,
         context_parallel_size=1,
+        rampup_batch_size=None,
         zephon_data_config=str(
             Path(__file__).resolve().parents[3] / "examples/zephon/local_jsonl.toml"
         ),
@@ -355,6 +406,10 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
             return_value=2,
         ),
         mock.patch(
+            "megatron.training.datasets.zephon_dataloader.get_num_microbatches",
+            return_value=2,
+        ),
+        mock.patch(
             "megatron.training.datasets.zephon_dataloader.MegatronZephonDataLoader",
             return_value=loader,
         ) as loader_type,
@@ -363,7 +418,18 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
         result = zephon_train_valid_test_datasets_provider([])
 
     assert loader_type.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
+    assert loader_type.call_args.kwargs["num_batches_per_train_step"] == 4
     assert result == (loader, None, None)
+
+
+def test_provider_rejects_batch_size_rampup() -> None:
+    args = SimpleNamespace(eval_iters=0, context_parallel_size=1, rampup_batch_size=[4, 4, 100])
+
+    with (
+        mock.patch("megatron.training.datasets.zephon_dataloader.get_args", return_value=args),
+        pytest.raises(ValueError, match="does not support batch-size ramp-up"),
+    ):
+        zephon_train_valid_test_datasets_provider([])
 
 
 def test_unsupported_tokenizer_type_is_rejected_clearly() -> None:

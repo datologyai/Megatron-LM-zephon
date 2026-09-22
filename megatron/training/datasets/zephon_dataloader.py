@@ -12,10 +12,16 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import torch
+from zephon import Pipeline
+from zephon.io import CacheOptions, Dataset, StoreOptions
+from zephon.work import MixtureSpec, StaticMixtureWorkSource, TokenEstimation
 
 from megatron.core import mpu
+from megatron.core.num_microbatches_calculator import get_num_microbatches
 from megatron.training import get_args, print_rank_0
 from megatron.training.checkpointing import get_dataloader_checkpoint_name
+
+TOKENS_FIELD = "input_ids"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,12 +111,7 @@ def load_zephon_data_config(path: str | os.PathLike[str]) -> ZephonDataConfig:
                 raise ValueError(f"Zephon {key} must not be empty when set")
             values[key] = _resolve_recipe_path(str(value), recipe_path.parent)
 
-    config = ZephonDataConfig(sources=tuple(sources), **values)
-    if config.chunk_size < 1:
-        raise ValueError("Zephon chunk_size must be positive")
-    if config.fetch_parallelism is not None and config.fetch_parallelism < 1:
-        raise ValueError("Zephon fetch_parallelism must be positive")
-    return config
+    return ZephonDataConfig(sources=tuple(sources), **values)
 
 
 def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> ZephonDataConfig:
@@ -129,7 +130,10 @@ def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> Zepho
 
 
 def _build_zephon_runtime_options(
-    config: ZephonDataConfig, *, data_parallel_rank: int, data_parallel_size: int
+    config: ZephonDataConfig,
+    *,
+    data_parallel_rank: int,
+    data_parallel_size: int,
 ) -> dict[str, Any]:
     """Build Zephon coordination options for the ranks that own distinct data streams."""
 
@@ -139,28 +143,21 @@ def _build_zephon_runtime_options(
         "dp_group_id": data_parallel_rank,
         "world_size": data_parallel_size,
         "global_rank": data_parallel_rank,
-        "canonical_replicas": config.canonical_replicas or data_parallel_size,
+        "canonical_replicas": (
+            config.canonical_replicas
+            if config.canonical_replicas is not None
+            else data_parallel_size
+        ),
     }
     if config.cache_dir is not None:
-        options["io_options"] = {"cache": {"enabled": True, "root": config.cache_dir}}
+        options["io_options"] = StoreOptions(
+            cache=CacheOptions(enabled=True, root=config.cache_dir)
+        )
     if config.aggregate_dir is not None:
         options["aggregate_dir"] = config.aggregate_dir
     if config.run_id is not None:
         options["run_id"] = config.run_id
     return options
-
-
-def _require_zephon() -> tuple[Any, Any, Any, Any, Any]:
-    try:
-        from zephon import Pipeline
-        from zephon.io import Dataset
-        from zephon.work import MixtureSpec, StaticMixtureWorkSource, TokenEstimation
-    except ImportError as exc:
-        raise ImportError(
-            "Zephon GPT pretraining requires the private Zephon package. "
-            "See examples/zephon/README.md for installation instructions."
-        ) from exc
-    return Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource, TokenEstimation
 
 
 def _zephon_tokenizer_id_from_args(args: Any) -> str:
@@ -187,13 +184,26 @@ class MegatronZephonDataLoader:
         sequence_length: int,
         data_parallel_rank: int,
         data_parallel_size: int,
+        num_batches_per_train_step: int | None = None,
     ) -> None:
-        Pipeline, Dataset, MixtureSpec, StaticMixtureWorkSource, TokenEstimation = _require_zephon()
-
-        canonical_replicas = config.canonical_replicas or data_parallel_size
-        if canonical_replicas < data_parallel_size:
+        canonical_replicas = (
+            config.canonical_replicas
+            if config.canonical_replicas is not None
+            else data_parallel_size
+        )
+        if canonical_replicas <= 0 or canonical_replicas % data_parallel_size:
             raise ValueError(
-                "Zephon canonical_replicas must be at least the current data-parallel size"
+                "Zephon canonical_replicas must be positive and divisible by the current "
+                "data-parallel size so every rank owns the same number of lanes"
+            )
+        if (
+            num_batches_per_train_step is not None
+            and num_batches_per_train_step % canonical_replicas
+        ):
+            raise ValueError(
+                "The number of batches consumed per training step must be a multiple of "
+                "Zephon canonical_replicas so checkpoints land on complete lane-window "
+                "boundaries"
             )
         if data_parallel_size > 1 and (not config.aggregate_dir or not config.run_id):
             raise ValueError(
@@ -219,7 +229,9 @@ class MegatronZephonDataLoader:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
 
         options = _build_zephon_runtime_options(
-            config, data_parallel_rank=data_parallel_rank, data_parallel_size=data_parallel_size
+            config,
+            data_parallel_rank=data_parallel_rank,
+            data_parallel_size=data_parallel_size,
         )
 
         self._pipeline = (
@@ -235,6 +247,7 @@ class MegatronZephonDataLoader:
             .batch(micro_batch_size, drop_last=True)
             .options(**options)
         )
+        self._pipeline.preflight_tokenizers()
         self._iterator = iter(self._pipeline)
 
     def __iter__(self) -> "MegatronZephonDataLoader":
@@ -243,7 +256,7 @@ class MegatronZephonDataLoader:
     def __next__(self) -> dict[str, torch.Tensor]:
         sample_batch = next(self._iterator)
         training_batch = sample_batch.to_training(
-            tokens_field="input_ids", return_labels=True, dtype=torch.long, ignore_index=-100
+            tokens_field=TOKENS_FIELD, return_labels=True, dtype=torch.long, ignore_index=-100
         )
         labels = training_batch["labels"]
         return {
@@ -333,17 +346,21 @@ def zephon_train_valid_test_datasets_provider(
         raise ValueError("The initial Zephon integration requires --eval-iters 0")
     if args.context_parallel_size != 1:
         raise ValueError("The initial Zephon integration requires --context-parallel-size 1")
+    if args.rampup_batch_size is not None:
+        raise ValueError("The initial Zephon integration does not support batch-size ramp-up")
     if mpu.get_tensor_model_parallel_rank() != 0:
         return None, None, None
 
     config = apply_zephon_runtime_overrides(load_zephon_data_config(args.zephon_data_config), args)
+    data_parallel_size = mpu.get_data_parallel_world_size()
     loader = MegatronZephonDataLoader(
         config,
         tokenizer_id=_zephon_tokenizer_id_from_args(args),
         micro_batch_size=args.micro_batch_size,
         sequence_length=args.seq_length,
         data_parallel_rank=mpu.get_data_parallel_rank(),
-        data_parallel_size=mpu.get_data_parallel_world_size(),
+        data_parallel_size=data_parallel_size,
+        num_batches_per_train_step=get_num_microbatches() * data_parallel_size,
     )
     _restore_dataloader_state(loader, args)
     return loader, None, None

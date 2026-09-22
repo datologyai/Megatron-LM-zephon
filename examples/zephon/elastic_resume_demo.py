@@ -111,6 +111,7 @@ def _worker(args: argparse.Namespace) -> None:
         sequence_length=args.sequence_length,
         data_parallel_rank=rank,
         data_parallel_size=world_size,
+        num_batches_per_train_step=canonical_replicas,
     )
 
     if args.phase == "resume":

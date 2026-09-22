@@ -80,6 +80,7 @@ jobs:
         run: |
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install pytest triton click requests pyyaml numpy
+          python -m pip install -r requirements-zephon.txt
       - name: Run public adapter tests
         run: |
           python -m pytest -q tests/unit_tests/data/test_zephon_dataloader.py
