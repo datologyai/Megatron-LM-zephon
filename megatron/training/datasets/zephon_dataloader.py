@@ -424,6 +424,10 @@ def _validate_zephon_launch(args: Any) -> None:
         raise ValueError("The initial Zephon integration requires --context-parallel-size 1")
     if args.rampup_batch_size is not None:
         raise ValueError("The initial Zephon integration does not support batch-size ramp-up")
+    if getattr(args, "step_batch_size_schedule", None) is not None:
+        raise ValueError(
+            "The initial Zephon integration does not support --step-batch-size-schedule"
+        )
     if getattr(args, "save", None) and not getattr(args, "dataloader_save", None):
         raise ValueError("Zephon training with --save requires --dataloader-save")
     if getattr(args, "virtual_pipeline_model_parallel_size", None) is not None:

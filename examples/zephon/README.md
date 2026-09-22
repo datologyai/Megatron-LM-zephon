@@ -157,7 +157,8 @@ Elastic launches also require stable `--zephon-canonical-replicas`,
 `--zephon-aggregate-dir`, and `--zephon-run-id` values. The canonical lane
 count must be divisible by every supported DP degree, and every optimizer step
 must consume a whole number of canonical lane windows. Batch-size ramp-up is
-not supported by this reference integration.
+not supported by this reference integration, including
+`--step-batch-size-schedule`.
 
 Keep the recipe, tokenizer, sequence length, seed, logical global batch,
 canonical lane count, aggregate directory, and run ID unchanged across resume.
@@ -216,5 +217,5 @@ to the topology being claimed.
 
 The current reference path does not implement validation or test loaders,
 context parallelism greater than one, pretokenized/prepacked input, batch-size
-ramp-up, virtual pipeline parallelism, in-process restart, or elastic TP/PP/EP
-changes.
+ramp-up or step batch-size schedules, virtual pipeline parallelism, in-process
+restart, or elastic TP/PP/EP changes.

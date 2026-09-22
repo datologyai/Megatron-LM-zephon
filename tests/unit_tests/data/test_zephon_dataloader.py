@@ -553,6 +553,7 @@ def _valid_launch_args(**overrides):
         "eval_iters": 0,
         "context_parallel_size": 1,
         "rampup_batch_size": None,
+        "step_batch_size_schedule": None,
         "save": None,
         "dataloader_save": None,
         "virtual_pipeline_model_parallel_size": None,
@@ -567,6 +568,7 @@ def _valid_launch_args(**overrides):
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
+        ({"step_batch_size_schedule": "0:8 1000:16"}, "--step-batch-size-schedule"),
         ({"save": "/model"}, "--save requires --dataloader-save"),
         ({"virtual_pipeline_model_parallel_size": 2}, "virtual pipeline parallelism"),
         ({"inprocess_restart": True}, "--inprocess-restart"),
