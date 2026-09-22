@@ -112,6 +112,8 @@ def _worker(args: argparse.Namespace) -> None:
     loader = MegatronZephonDataLoader(
         config,
         tokenizer_id=str(args.tokenizer_id),
+        bos_token_id=1,
+        eos_token_id=2,
         micro_batch_size=args.micro_batch_size,
         sequence_length=args.sequence_length,
         data_parallel_rank=rank,

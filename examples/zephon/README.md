@@ -134,9 +134,10 @@ size such as `"50gb"`.
 
 Megatron supplies the tokenizer identifier, sequence length, and microbatch
 size, so those settings stay in Megatron's launch configuration. Zephon loads
-its own tokenizer instance from the same `--tokenizer-model` value. Keep those
-tokenizer assets unchanged across resume and do not depend on Megatron-only
-tokenizer mutations for this reference path.
+its own tokenizer instance from the same `--tokenizer-model` value. The adapter
+also forwards Megatron's resolved BOS and EOS token IDs so Zephon's document
+boundaries cannot diverge from the model-facing tokenizer. Keep the tokenizer
+assets unchanged across resume.
 
 ## Launch the entry point directly
 
@@ -162,6 +163,14 @@ Keep the recipe, tokenizer, sequence length, seed, logical global batch,
 canonical lane count, aggregate directory, and run ID unchanged across resume.
 The physical data-parallel degree may change. Resume only from a completed
 model checkpoint with the corresponding dataloader checkpoint directory.
+Model checkpointing through `--save` requires `--dataloader-save`; iteration-zero
+model initialization starts a fresh Zephon stream, while later resumes require
+the exactly matching dataloader checkpoint.
+
+Use `--dataloader-inter-document-masking` to restrict attention across packed
+document boundaries. The legacy `--reset-attention-mask` option is accepted
+only when that explicit option is also enabled. `--reset-position-ids` and
+`--eod-mask-loss` retain their standard Megatron semantics.
 
 ## Integration contract
 
@@ -172,8 +181,8 @@ The adapter supports online raw text and fixed-length GPT pretraining. It:
 2. Tokenizes and wraps packed sequences online with Zephon.
 3. Uses `SampleBatch.to_training()` to create next-token labels while
    preserving Megatron tensors shaped `[micro_batch_size, sequence_length]`.
-4. Derives `loss_mask` from the labels and passes positions through to the GPT
-   trainer.
+4. Produces the Megatron loss mask and position IDs, optionally masks EOD
+   transitions, and emits packed-document sequence metadata when requested.
 5. Stores Zephon's complete public checkpoint object beside the corresponding
    completed Megatron checkpoint.
 
@@ -207,4 +216,5 @@ to the topology being claimed.
 
 The current reference path does not implement validation or test loaders,
 context parallelism greater than one, pretokenized/prepacked input, batch-size
-ramp-up, or elastic TP/PP/EP changes.
+ramp-up, virtual pipeline parallelism, in-process restart, or elastic TP/PP/EP
+changes.

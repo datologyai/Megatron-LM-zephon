@@ -19,7 +19,7 @@ from zephon.work import MixtureSpec, StaticMixtureWorkSource, TokenEstimation
 
 from megatron.core import mpu
 from megatron.core.num_microbatches_calculator import get_num_microbatches
-from megatron.training import get_args, print_rank_0
+from megatron.training import get_args, get_tokenizer, print_rank_0
 from megatron.training.checkpointing import get_dataloader_checkpoint_name
 
 TOKENS_FIELD = "input_ids"
@@ -224,10 +224,15 @@ class MegatronZephonDataLoader:
         config: ZephonDataConfig,
         *,
         tokenizer_id: str,
+        bos_token_id: int | None,
+        eos_token_id: int,
         micro_batch_size: int,
         sequence_length: int,
         data_parallel_rank: int,
         data_parallel_size: int,
+        reset_position_ids: bool = False,
+        eod_mask_loss: bool = False,
+        return_cu_seqlens: bool = False,
         num_batches_per_train_step: int | None = None,
     ) -> None:
         canonical_replicas = (
@@ -288,6 +293,8 @@ class MegatronZephonDataLoader:
             max_length=sequence_length + 1,
             split_long_samples=True,
             special_tokens="bos_eos",
+            bos_token_id=bos_token_id,
+            eos_token_id=eos_token_id,
             parallelism=config.tokenize_parallelism,
         ).pack_flat(
             max_length=sequence_length + 1,
@@ -303,23 +310,38 @@ class MegatronZephonDataLoader:
             )
         self._pipeline = self._pipeline.batch(micro_batch_size, drop_last=True).options(**options)
         self._pipeline.preflight_tokenizers()
-        self._iterator = iter(self._pipeline)
+        self._iterator = None
+        self._eod_token_id = eos_token_id
+        self._reset_position_ids = reset_position_ids
+        self._eod_mask_loss = eod_mask_loss
+        self._return_cu_seqlens = return_cu_seqlens
 
     def __iter__(self) -> "MegatronZephonDataLoader":
         return self
 
     def __next__(self) -> dict[str, torch.Tensor]:
-        sample_batch = next(self._iterator)
-        training_batch = sample_batch.to_training(
-            tokens_field=TOKENS_FIELD, return_labels=True, dtype=torch.long, ignore_index=-100
+        if self._iterator is None:
+            self._iterator = iter(self._pipeline)
+        training_batch = next(self._iterator).to_training(
+            tokens_field=TOKENS_FIELD,
+            return_labels=True,
+            return_loss_mask=True,
+            return_cu_seqlens=self._return_cu_seqlens,
+            dtype=torch.long,
+            ignore_index=-100,
+            rename_fields={"input_ids": "tokens", "positions": "position_ids"},
+            exclude_fields=("ids", "texts"),
         )
-        labels = training_batch["labels"]
-        return {
-            "tokens": training_batch["input_ids"],
-            "labels": labels,
-            "loss_mask": (labels != -100).float(),
-            "position_ids": training_batch["positions"],
-        }
+        if self._eod_mask_loss:
+            training_batch["loss_mask"][training_batch["tokens"] == self._eod_token_id] = 0.0
+        if not self._reset_position_ids:
+            positions = torch.arange(
+                training_batch["tokens"].shape[-1],
+                dtype=torch.long,
+                device=training_batch["tokens"].device,
+            )
+            training_batch["position_ids"] = positions.expand_as(training_batch["tokens"])
+        return training_batch
 
     def save_state(self) -> dict[str, bytes]:
         """Return an opaque Zephon checkpoint for Megatron checkpointing."""
@@ -340,7 +362,7 @@ class MegatronZephonDataLoader:
             self._pipeline.restore(restored_checkpoint)
         except Exception as exc:
             raise ValueError("Zephon checkpoint state is malformed or incompatible") from exc
-        self._iterator = iter(self._pipeline)
+        self._iterator = None
 
 
 def _zephon_dataloader_checkpoint_path(args: Any) -> str:
@@ -350,7 +372,7 @@ def _zephon_dataloader_checkpoint_path(args: Any) -> str:
 
 
 def _restore_dataloader_state(loader: MegatronZephonDataLoader, args: Any) -> None:
-    if args.load is None:
+    if args.load is None or args.iteration == 0:
         return
     if not args.dataloader_save:
         raise ValueError("Zephon resume with --load requires --dataloader-save")
@@ -393,6 +415,32 @@ def _restore_dataloader_state(loader: MegatronZephonDataLoader, args: Any) -> No
     print_rank_0(f"> restored Zephon dataloader state from {state_path}")
 
 
+def _validate_zephon_launch(args: Any) -> None:
+    """Reject unsupported or non-resumable Zephon launch configurations."""
+
+    if args.eval_iters != 0:
+        raise ValueError("The initial Zephon integration requires --eval-iters 0")
+    if args.context_parallel_size != 1:
+        raise ValueError("The initial Zephon integration requires --context-parallel-size 1")
+    if args.rampup_batch_size is not None:
+        raise ValueError("The initial Zephon integration does not support batch-size ramp-up")
+    if getattr(args, "save", None) and not getattr(args, "dataloader_save", None):
+        raise ValueError("Zephon training with --save requires --dataloader-save")
+    if getattr(args, "virtual_pipeline_model_parallel_size", None) is not None:
+        raise ValueError(
+            "The initial Zephon integration does not support virtual pipeline parallelism"
+        )
+    if getattr(args, "inprocess_restart", False):
+        raise ValueError("The initial Zephon integration does not support --inprocess-restart")
+    if getattr(args, "reset_attention_mask", False) and not getattr(
+        args, "dataloader_inter_document_masking", False
+    ):
+        raise ValueError(
+            "Zephon training requires --dataloader-inter-document-masking when "
+            "--reset-attention-mask is enabled"
+        )
+
+
 def zephon_train_valid_test_datasets_provider(
     _train_valid_test_num_samples: Sequence[int], vp_stage: int | None = None
 ) -> tuple[MegatronZephonDataLoader | None, None, None]:
@@ -400,24 +448,31 @@ def zephon_train_valid_test_datasets_provider(
 
     del vp_stage
     args = get_args()
-    if args.eval_iters != 0:
-        raise ValueError("The initial Zephon integration requires --eval-iters 0")
-    if args.context_parallel_size != 1:
-        raise ValueError("The initial Zephon integration requires --context-parallel-size 1")
-    if args.rampup_batch_size is not None:
-        raise ValueError("The initial Zephon integration does not support batch-size ramp-up")
+    _validate_zephon_launch(args)
     if mpu.get_tensor_model_parallel_rank() != 0:
+        return None, None, None
+    if (
+        not getattr(args, "dataloader_inter_document_masking", False)
+        and not mpu.is_pipeline_first_stage(ignore_virtual=True)
+        and not mpu.is_pipeline_last_stage(ignore_virtual=True)
+    ):
         return None, None, None
 
     config = apply_zephon_runtime_overrides(load_zephon_data_config(args.zephon_data_config), args)
     data_parallel_size = mpu.get_data_parallel_world_size()
+    tokenizer = get_tokenizer()
     loader = MegatronZephonDataLoader(
         config,
         tokenizer_id=_zephon_tokenizer_id_from_args(args),
+        bos_token_id=tokenizer.bos_id,
+        eos_token_id=tokenizer.eos_id,
         micro_batch_size=args.micro_batch_size,
         sequence_length=args.seq_length,
         data_parallel_rank=mpu.get_data_parallel_rank(),
         data_parallel_size=data_parallel_size,
+        reset_position_ids=args.reset_position_ids,
+        eod_mask_loss=args.eod_mask_loss,
+        return_cu_seqlens=args.dataloader_inter_document_masking,
         num_batches_per_train_step=get_num_microbatches() * data_parallel_size,
     )
     _restore_dataloader_state(loader, args)

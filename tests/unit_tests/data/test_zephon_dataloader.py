@@ -17,6 +17,7 @@ from megatron.training.datasets.zephon_dataloader import (
     ZephonSource,
     _build_zephon_runtime_options,
     _restore_dataloader_state,
+    _validate_zephon_launch,
     _zephon_dataloader_checkpoint_path,
     _zephon_tokenizer_id_from_args,
     apply_zephon_runtime_overrides,
@@ -133,23 +134,63 @@ def test_zephon_loader_maps_batches_to_megatron_schema() -> None:
     class FakeBatch:
         def to_training(self, **kwargs):
             assert kwargs["return_labels"] is True
+            assert kwargs["return_loss_mask"] is True
+            assert kwargs["return_cu_seqlens"] is True
             assert kwargs["tokens_field"] == TOKENS_FIELD
+            assert kwargs["rename_fields"] == {"input_ids": "tokens", "positions": "position_ids"}
+            assert kwargs["exclude_fields"] == ("ids", "texts")
             return {
-                "input_ids": torch.tensor([[1, 2, 3]]),
+                "tokens": torch.tensor([[1, 2, 3]]),
                 "labels": torch.tensor([[2, 3, -100]]),
-                "positions": torch.tensor([[0, 1, 2]]),
+                "loss_mask": torch.tensor([[1.0, 1.0, 0.0]]),
+                "position_ids": torch.tensor([[0, 1, 0]]),
+                "cu_seqlens": torch.tensor([[0, 2, 3]], dtype=torch.int32),
+                "max_seqlen": torch.tensor([2], dtype=torch.int32),
             }
 
     loader = MegatronZephonDataLoader.__new__(MegatronZephonDataLoader)
     loader._iterator = iter([FakeBatch()])
+    loader._eod_token_id = 2
+    loader._reset_position_ids = True
+    loader._eod_mask_loss = True
+    loader._return_cu_seqlens = True
 
     batch = next(loader)
 
-    assert set(batch) == {"tokens", "labels", "loss_mask", "position_ids"}
+    assert set(batch) == {
+        "tokens",
+        "labels",
+        "loss_mask",
+        "position_ids",
+        "cu_seqlens",
+        "max_seqlen",
+    }
     assert torch.equal(batch["tokens"], torch.tensor([[1, 2, 3]]))
     assert torch.equal(batch["labels"], torch.tensor([[2, 3, -100]]))
-    assert torch.equal(batch["loss_mask"], torch.tensor([[1.0, 1.0, 0.0]]))
-    assert torch.equal(batch["position_ids"], torch.tensor([[0, 1, 2]]))
+    assert torch.equal(batch["loss_mask"], torch.tensor([[1.0, 0.0, 0.0]]))
+    assert torch.equal(batch["position_ids"], torch.tensor([[0, 1, 0]]))
+
+
+def test_zephon_loader_uses_contiguous_positions_when_resets_are_disabled() -> None:
+    class FakeBatch:
+        def to_training(self, **_kwargs):
+            return {
+                "tokens": torch.tensor([[1, 2, 3], [4, 5, 6]]),
+                "labels": torch.tensor([[2, 3, 4], [5, 6, 7]]),
+                "loss_mask": torch.ones(2, 3),
+                "position_ids": torch.tensor([[0, 1, 0], [0, 0, 1]]),
+            }
+
+    loader = MegatronZephonDataLoader.__new__(MegatronZephonDataLoader)
+    loader._iterator = iter([FakeBatch()])
+    loader._eod_token_id = 2
+    loader._reset_position_ids = False
+    loader._eod_mask_loss = False
+    loader._return_cu_seqlens = False
+
+    batch = next(loader)
+
+    assert torch.equal(batch["position_ids"], torch.tensor([[0, 1, 2], [0, 1, 2]]))
 
 
 def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
@@ -177,6 +218,8 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
         MegatronZephonDataLoader(
             config,
             tokenizer_id="example/tokenizer",
+            bos_token_id=11,
+            eos_token_id=12,
             micro_batch_size=2,
             sequence_length=16,
             data_parallel_rank=0,
@@ -184,8 +227,11 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
         )
 
     assert pipeline.tokenize.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
+    assert pipeline.tokenize.call_args.kwargs["bos_token_id"] == 11
+    assert pipeline.tokenize.call_args.kwargs["eos_token_id"] == 12
     assert "tokenizer" not in pipeline.tokenize.call_args.kwargs
     pipeline.preflight_tokenizers.assert_called_once_with()
+    pipeline.__iter__.assert_not_called()
 
 
 def test_runtime_options_use_data_parallel_coordination_identity() -> None:
@@ -243,6 +289,8 @@ def test_loader_rejects_invalid_elastic_alignment(
         MegatronZephonDataLoader(
             config,
             tokenizer_id="example/tokenizer",
+            bos_token_id=1,
+            eos_token_id=2,
             micro_batch_size=1,
             sequence_length=16,
             data_parallel_rank=0,
@@ -351,6 +399,14 @@ def test_fresh_training_does_not_require_dataloader_checkpoint(tmp_path: Path) -
     assert loader.restored == []
 
 
+def test_iteration_zero_load_starts_a_fresh_dataloader_stream(tmp_path: Path) -> None:
+    loader = _RecordingLoader()
+
+    _restore_dataloader_state(loader, _resume_args(tmp_path, iteration=0))
+
+    assert loader.restored == []
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -407,6 +463,18 @@ def test_restore_state_rejects_malformed_opaque_checkpoint() -> None:
         loader.restore_state({"zephon": pickle.dumps({"state": 1})})
 
 
+def test_restore_state_leaves_iterator_initialization_lazy() -> None:
+    loader = MegatronZephonDataLoader.__new__(MegatronZephonDataLoader)
+    loader._pipeline = mock.MagicMock()
+    loader._iterator = object()
+
+    loader.restore_state({"zephon": pickle.dumps({"state": 1})})
+
+    loader._pipeline.restore.assert_called_once_with({"state": 1})
+    loader._pipeline.__iter__.assert_not_called()
+    assert loader._iterator is None
+
+
 def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
     args = SimpleNamespace(
         eval_iters=0,
@@ -422,14 +490,31 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
         seq_length=16,
         tokenizer_type="HuggingFaceTokenizer",
         tokenizer_model="example/tokenizer",
+        save=None,
+        dataloader_save=None,
+        virtual_pipeline_model_parallel_size=None,
+        inprocess_restart=False,
+        reset_attention_mask=False,
+        dataloader_inter_document_masking=True,
+        reset_position_ids=True,
+        eod_mask_loss=True,
     )
     loader = object()
+    tokenizer = SimpleNamespace(bos_id=11, eos_id=12)
 
     with (
         mock.patch("megatron.training.datasets.zephon_dataloader.get_args", return_value=args),
         mock.patch(
             "megatron.training.datasets.zephon_dataloader.mpu.get_tensor_model_parallel_rank",
             return_value=0,
+        ),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.mpu.is_pipeline_first_stage",
+            return_value=False,
+        ),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.mpu.is_pipeline_last_stage",
+            return_value=False,
         ),
         mock.patch(
             "megatron.training.datasets.zephon_dataloader.mpu.get_data_parallel_rank",
@@ -446,17 +531,88 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
             "megatron.training.datasets.zephon_dataloader.MegatronZephonDataLoader",
             return_value=loader,
         ) as loader_type,
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.get_tokenizer", return_value=tokenizer
+        ),
         mock.patch("megatron.training.datasets.zephon_dataloader._restore_dataloader_state"),
     ):
         result = zephon_train_valid_test_datasets_provider([])
 
     assert loader_type.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
+    assert loader_type.call_args.kwargs["bos_token_id"] == 11
+    assert loader_type.call_args.kwargs["eos_token_id"] == 12
+    assert loader_type.call_args.kwargs["reset_position_ids"] is True
+    assert loader_type.call_args.kwargs["eod_mask_loss"] is True
+    assert loader_type.call_args.kwargs["return_cu_seqlens"] is True
     assert loader_type.call_args.kwargs["num_batches_per_train_step"] == 4
     assert result == (loader, None, None)
 
 
+def _valid_launch_args(**overrides):
+    values = {
+        "eval_iters": 0,
+        "context_parallel_size": 1,
+        "rampup_batch_size": None,
+        "save": None,
+        "dataloader_save": None,
+        "virtual_pipeline_model_parallel_size": None,
+        "inprocess_restart": False,
+        "reset_attention_mask": False,
+        "dataloader_inter_document_masking": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"save": "/model"}, "--save requires --dataloader-save"),
+        ({"virtual_pipeline_model_parallel_size": 2}, "virtual pipeline parallelism"),
+        ({"inprocess_restart": True}, "--inprocess-restart"),
+        ({"reset_attention_mask": True}, "--dataloader-inter-document-masking"),
+    ],
+)
+def test_unsupported_launch_configurations_are_rejected(overrides, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        _validate_zephon_launch(_valid_launch_args(**overrides))
+
+
+def test_explicit_inter_document_masking_allows_legacy_reset_attention_flag() -> None:
+    _validate_zephon_launch(
+        _valid_launch_args(reset_attention_mask=True, dataloader_inter_document_masking=True)
+    )
+
+
+def test_provider_skips_unused_middle_pipeline_stages() -> None:
+    args = _valid_launch_args()
+
+    with (
+        mock.patch("megatron.training.datasets.zephon_dataloader.get_args", return_value=args),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.mpu.get_tensor_model_parallel_rank",
+            return_value=0,
+        ),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.mpu.is_pipeline_first_stage",
+            return_value=False,
+        ),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.mpu.is_pipeline_last_stage",
+            return_value=False,
+        ),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.load_zephon_data_config"
+        ) as load_config,
+    ):
+        result = zephon_train_valid_test_datasets_provider([])
+
+    assert result == (None, None, None)
+    load_config.assert_not_called()
+
+
 def test_provider_rejects_batch_size_rampup() -> None:
-    args = SimpleNamespace(eval_iters=0, context_parallel_size=1, rampup_batch_size=[4, 4, 100])
+    args = _valid_launch_args(rampup_batch_size=[4, 4, 100])
 
     with (
         mock.patch("megatron.training.datasets.zephon_dataloader.get_args", return_value=args),
