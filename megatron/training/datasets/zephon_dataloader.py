@@ -41,24 +41,54 @@ class ZephonDataConfig:
     sources: tuple[ZephonSource, ...]
     text_field: str = "text"
     cache_dir: str | None = None
+    cache_limit_bytes: int | None = None
     seed: int = 42
-    chunk_size: int = 64
+    chunk_size: int = 16_384
+    shuffle_shards: bool = True
+    shuffle_within_shard: bool = True
+    shuffle_block_size: int | str | None = "auto"
+    token_estimation: bool = True
+    shuffle_after_pack: bool = True
+    shuffle_buffer_size: int | None = None
+    shuffle_parallelism: int | None = None
+    repeat: bool = True
     canonical_replicas: int | None = None
     aggregate_dir: str | None = None
     run_id: str | None = None
     fetch_parallelism: int | None = None
+    prefetch_buffer_size: int = 0
+    prefetch_parallelism: int | None = None
+    tokenize_parallelism: int | None = None
+    pack_parallelism: int | None = None
+    runner: str = "process"
+    mtp_mode: bool | None = None
 
 
 _CONFIG_KEYS = {
     "sources",
     "text_field",
     "cache_dir",
+    "cache_limit_bytes",
     "seed",
     "chunk_size",
+    "shuffle_shards",
+    "shuffle_within_shard",
+    "shuffle_block_size",
+    "token_estimation",
+    "shuffle_after_pack",
+    "shuffle_buffer_size",
+    "shuffle_parallelism",
+    "repeat",
     "canonical_replicas",
     "aggregate_dir",
     "run_id",
     "fetch_parallelism",
+    "prefetch_buffer_size",
+    "prefetch_parallelism",
+    "tokenize_parallelism",
+    "pack_parallelism",
+    "runner",
+    "mtp_mode",
 }
 
 
@@ -143,6 +173,8 @@ def _build_zephon_runtime_options(
         "dp_group_id": data_parallel_rank,
         "world_size": data_parallel_size,
         "global_rank": data_parallel_rank,
+        "runner": config.runner,
+        "mtp_mode": config.mtp_mode if config.mtp_mode is not None else True,
         "canonical_replicas": (
             config.canonical_replicas
             if config.canonical_replicas is not None
@@ -151,7 +183,11 @@ def _build_zephon_runtime_options(
     }
     if config.cache_dir is not None:
         options["io_options"] = StoreOptions(
-            cache=CacheOptions(enabled=True, root=config.cache_dir)
+            cache=CacheOptions(
+                enabled=True,
+                root=config.cache_dir,
+                limit_bytes=config.cache_limit_bytes,
+            )
         )
     if config.aggregate_dir is not None:
         options["aggregate_dir"] = config.aggregate_dir
@@ -219,12 +255,18 @@ class MegatronZephonDataLoader:
             mixture=MixtureSpec({source.name: source.weight for source in config.sources}),
             chunk_size=config.chunk_size,
             seed=config.seed,
-            exhausted_policy="repeat",
-            shuffle_shards=True,
-            shuffle_within_shard=True,
-            token_estimation=TokenEstimation(),
+            exhausted_policy="repeat" if config.repeat else None,
+            shuffle_shards=config.shuffle_shards,
+            shuffle_within_shard=config.shuffle_within_shard,
+            shuffle_block_size=config.shuffle_block_size,
+            token_estimation=TokenEstimation() if config.token_estimation else None,
         )
         pipeline = Pipeline(work_source)
+        if config.prefetch_buffer_size:
+            pipeline = pipeline.prefetch(
+                buffer_size=config.prefetch_buffer_size,
+                parallelism=config.prefetch_parallelism,
+            )
         if config.fetch_parallelism is not None:
             pipeline = pipeline.fetch_parallelism(config.fetch_parallelism)
 
@@ -242,11 +284,22 @@ class MegatronZephonDataLoader:
                 max_length=sequence_length + 1,
                 split_long_samples=True,
                 special_tokens="bos_eos",
+                parallelism=config.tokenize_parallelism,
             )
-            .pack_flat(max_length=sequence_length + 1, algorithm="wrap", emit_positions=True)
-            .batch(micro_batch_size, drop_last=True)
-            .options(**options)
+            .pack_flat(
+                max_length=sequence_length + 1,
+                algorithm="wrap",
+                emit_positions=True,
+                parallelism=config.pack_parallelism,
+            )
         )
+        if config.shuffle_after_pack:
+            self._pipeline = self._pipeline.shuffle(
+                seed=config.seed,
+                buffer_size=config.shuffle_buffer_size,
+                parallelism=config.shuffle_parallelism,
+            )
+        self._pipeline = self._pipeline.batch(micro_batch_size, drop_last=True).options(**options)
         self._pipeline.preflight_tokenizers()
         self._iterator = iter(self._pipeline)
 

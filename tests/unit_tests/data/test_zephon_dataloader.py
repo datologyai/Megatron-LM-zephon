@@ -11,6 +11,8 @@ from megatron.training.checkpointing import get_dataloader_checkpoint_name
 from megatron.training.datasets.zephon_dataloader import (
     TOKENS_FIELD,
     MegatronZephonDataLoader,
+    ZephonDataConfig,
+    ZephonSource,
     _build_zephon_runtime_options,
     _restore_dataloader_state,
     _zephon_dataloader_checkpoint_path,
@@ -109,22 +111,16 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
     pipeline = mock.MagicMock()
     pipeline.tokenize.return_value = pipeline
     pipeline.pack_flat.return_value = pipeline
+    pipeline.shuffle.return_value = pipeline
     pipeline.batch.return_value = pipeline
     pipeline.options.return_value = pipeline
     pipeline.preflight_tokenizers.return_value = None
     pipeline.__iter__.return_value = iter(())
     dataset_type = mock.Mock()
     dataset_type.from_path.return_value = object()
-    config = SimpleNamespace(
-        sources=(SimpleNamespace(name="source", path="data", fmt=None, weight=1.0),),
-        text_field="text",
-        cache_dir=None,
-        seed=42,
-        chunk_size=4,
+    config = ZephonDataConfig(
+        sources=(ZephonSource(name="source", path="data"),),
         canonical_replicas=1,
-        aggregate_dir=None,
-        run_id=None,
-        fetch_parallelism=None,
     )
 
     with (
@@ -152,7 +148,13 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
 
 def test_runtime_options_use_data_parallel_coordination_identity() -> None:
     config = SimpleNamespace(
-        canonical_replicas=8, cache_dir="/cache", aggregate_dir="/aggregate", run_id="run"
+        canonical_replicas=8,
+        cache_dir="/cache",
+        cache_limit_bytes=123,
+        aggregate_dir="/aggregate",
+        run_id="run",
+        runner="process",
+        mtp_mode=None,
     )
 
     with (
@@ -180,10 +182,17 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         "dp_group_id": 2,
         "world_size": 4,
         "global_rank": 2,
+        "runner": "process",
+        "mtp_mode": True,
         "canonical_replicas": 8,
         "io_options": (
             "store",
-            {"cache": ("cache", {"enabled": True, "root": "/cache"})},
+            {
+                "cache": (
+                    "cache",
+                    {"enabled": True, "root": "/cache", "limit_bytes": 123},
+                )
+            },
         ),
         "aggregate_dir": "/aggregate",
         "run_id": "run",

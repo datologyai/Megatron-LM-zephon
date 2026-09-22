@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -104,6 +105,10 @@ def _worker(args: argparse.Namespace) -> None:
             zephon_run_id=args.run_id,
         ),
     )
+    # Each data-only worker is already a short-lived torchrun subprocess. Keep
+    # this correctness demo single-process within each worker; the GPU smoke
+    # script exercises the process runner and automatic MTP default.
+    config = replace(config, runner="inline", mtp_mode=False)
     loader = MegatronZephonDataLoader(
         config,
         tokenizer_id=str(args.tokenizer_id),
