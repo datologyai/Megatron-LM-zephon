@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import pickle
 import tomllib
@@ -41,7 +42,7 @@ class ZephonDataConfig:
     sources: tuple[ZephonSource, ...]
     text_field: str = "text"
     cache_dir: str | None = None
-    cache_limit_bytes: int | None = None
+    cache_limit_bytes: int | str | None = None
     seed: int = 42
     chunk_size: int = 16_384
     shuffle_shards: bool = True
@@ -91,6 +92,8 @@ _CONFIG_KEYS = {
     "mtp_mode",
 }
 
+_SOURCE_KEYS = frozenset({"name", "path", "fmt", "weight"})
+
 
 def _resolve_recipe_path(value: str, recipe_dir: Path) -> str:
     if "://" in value or Path(value).is_absolute():
@@ -117,6 +120,11 @@ def load_zephon_data_config(path: str | os.PathLike[str]) -> ZephonDataConfig:
     for source in raw_sources:
         if not isinstance(source, Mapping) or "name" not in source or "path" not in source:
             raise ValueError("Each Zephon source must contain 'name' and 'path' fields")
+        unknown_source_keys = set(source) - _SOURCE_KEYS
+        if unknown_source_keys:
+            raise ValueError(
+                "Unknown Zephon source fields: " + ", ".join(sorted(unknown_source_keys))
+            )
         sources.append(
             ZephonSource(
                 name=str(source["name"]),
@@ -131,8 +139,13 @@ def load_zephon_data_config(path: str | os.PathLike[str]) -> ZephonDataConfig:
         raise ValueError("Zephon source names must be unique")
     if any(not source.name or not source.path for source in sources):
         raise ValueError("Zephon source names and paths must not be empty")
+    if any(not math.isfinite(source.weight) for source in sources):
+        raise ValueError("Zephon source weights must all be finite")
     if any(source.weight <= 0 for source in sources):
         raise ValueError("Zephon source weights must all be positive")
+
+    if values.get("shuffle_block_size") == "none":
+        values["shuffle_block_size"] = None
 
     for key in ("cache_dir", "aggregate_dir"):
         value = values.get(key)
@@ -180,8 +193,8 @@ def _build_zephon_runtime_options(
     }
     if config.cache_dir is not None:
         options["io_options"] = StoreOptions(
-            cache=CacheOptions(
-                enabled=True, root=config.cache_dir, limit_bytes=config.cache_limit_bytes
+            cache=CacheOptions.from_any(
+                {"enabled": True, "root": config.cache_dir, "limit_bytes": config.cache_limit_bytes}
             )
         )
     if config.aggregate_dir is not None:

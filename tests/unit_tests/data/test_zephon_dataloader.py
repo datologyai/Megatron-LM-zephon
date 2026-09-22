@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 import torch
+from zephon.io import StoreOptions
 
 from megatron.training.checkpointing import get_dataloader_checkpoint_name
 from megatron.training.datasets.zephon_dataloader import (
@@ -59,12 +60,54 @@ path = "data"
 """,
             "Unknown Zephon data recipe keys",
         ),
+        "unknown-source-field.toml": (
+            """
+[[sources]]
+name = "data"
+path = "data"
+wieght = 9.0
+""",
+            "Unknown Zephon source fields: wieght",
+        ),
+        "nan-weight.toml": (
+            """
+[[sources]]
+name = "data"
+path = "data"
+weight = nan
+""",
+            "weights must all be finite",
+        ),
+        "infinite-weight.toml": (
+            """
+[[sources]]
+name = "data"
+path = "data"
+weight = inf
+""",
+            "weights must all be finite",
+        ),
     }
     for filename, (contents, message) in invalid_recipes.items():
         recipe = tmp_path / filename
         recipe.write_text(contents)
         with pytest.raises(ValueError, match=message):
             load_zephon_data_config(recipe)
+
+
+def test_load_zephon_data_config_normalizes_explicitly_disabled_block_shuffle(
+    tmp_path: Path,
+) -> None:
+    recipe = tmp_path / "no-block-shuffle.toml"
+    recipe.write_text("""
+shuffle_block_size = "none"
+
+[[sources]]
+name = "data"
+path = "data"
+""")
+
+    assert load_zephon_data_config(recipe).shuffle_block_size is None
 
 
 def test_runtime_values_override_reusable_recipe() -> None:
@@ -149,7 +192,7 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
     config = SimpleNamespace(
         canonical_replicas=8,
         cache_dir="/cache",
-        cache_limit_bytes=123,
+        cache_limit_bytes="50gb",
         aggregate_dir="/aggregate",
         run_id="run",
         runner="process",
@@ -160,17 +203,10 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         mock.patch("torch.distributed.is_initialized", return_value=True),
         mock.patch("torch.distributed.get_world_size", return_value=16),
         mock.patch("torch.distributed.get_rank", return_value=11),
-        mock.patch(
-            "megatron.training.datasets.zephon_dataloader.CacheOptions",
-            side_effect=lambda **values: ("cache", values),
-        ),
-        mock.patch(
-            "megatron.training.datasets.zephon_dataloader.StoreOptions",
-            side_effect=lambda **values: ("store", values),
-        ),
     ):
         options = _build_zephon_runtime_options(config, data_parallel_rank=2, data_parallel_size=4)
 
+    io_options = options.pop("io_options")
     assert options == {
         "deterministic": True,
         "dp_degree": 4,
@@ -180,13 +216,13 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         "runner": "process",
         "mtp_mode": True,
         "canonical_replicas": 8,
-        "io_options": (
-            "store",
-            {"cache": ("cache", {"enabled": True, "root": "/cache", "limit_bytes": 123})},
-        ),
         "aggregate_dir": "/aggregate",
         "run_id": "run",
     }
+    assert isinstance(io_options, StoreOptions)
+    assert io_options.cache.enabled is True
+    assert str(io_options.cache.root) == "/cache"
+    assert io_options.cache.limit_bytes == 50 * 1024**3
 
 
 @pytest.mark.parametrize(

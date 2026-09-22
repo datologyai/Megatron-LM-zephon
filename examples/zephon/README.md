@@ -22,10 +22,11 @@ The dependency currently resolves through the private `datologyai/zephon`
 repository and requires GitHub access. For active Zephon development, install
 a sibling checkout with `uv pip install -e /path/to/zephon`.
 
-## CPU data-only elastic demo
+## CPU data-only elastic determinism demo
 
-`elastic_resume_demo.py` tests the dataloader stream and checkpoint without
-constructing or training a model:
+`elastic_resume_demo.py` tests that the dataloader stream remains deterministic
+across checkpoint/resume with a changed DP degree, without constructing or
+training a model:
 
 ```bash
 uv run --no-sync python examples/zephon/elastic_resume_demo.py
@@ -89,7 +90,7 @@ Copy `local_jsonl.toml` and replace its sources:
 ```toml
 text_field = "text"
 cache_dir = "/local-ssd/zephon"
-cache_limit_bytes = 536870912000
+cache_limit_bytes = "500gb"
 seed = 42
 chunk_size = 16384
 shuffle_block_size = "auto"
@@ -115,7 +116,8 @@ training default. Zephon normalizes the weights.
 The scheduling controls are independent:
 
 - `shuffle_shards` and `shuffle_within_shard` control source ordering.
-- `shuffle_block_size` accepts `"auto"`, `"global"`, or a positive integer.
+- `shuffle_block_size` accepts `"auto"`, `"global"`, `"none"`, or a positive
+  integer. `"none"` disables block shuffling.
 - `token_estimation` chooses token-aware rather than record-aware proportions.
 - `repeat` controls source exhaustion.
 - `shuffle_after_pack` controls the shuffle over packed sequences;
@@ -126,6 +128,9 @@ Shard prefetch is off by default. Set `prefetch_buffer_size` and optionally
 `tokenize_parallelism`, and `pack_parallelism` tune the individual stages. The
 default runner is `"process"`; leaving `mtp_mode` unset enables MTP for this
 tokenize-and-pack pipeline.
+
+`cache_limit_bytes` accepts either an integer byte count or a human-readable
+size such as `"50gb"`.
 
 Megatron supplies the tokenizer identifier, sequence length, and microbatch
 size, so those settings stay in Megatron's launch configuration. Zephon loads
