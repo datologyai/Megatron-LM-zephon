@@ -7,6 +7,7 @@ from unittest import mock
 
 import pytest
 import torch
+from zephon import SampleBatch, SampleMeta, SampleRecord
 from zephon.io import StoreOptions
 
 from megatron.training.checkpointing import get_dataloader_checkpoint_name
@@ -130,67 +131,59 @@ def test_runtime_values_override_reusable_recipe() -> None:
     assert updated.run_id == "example-run"
 
 
-def test_zephon_loader_maps_batches_to_megatron_schema() -> None:
-    class FakeBatch:
-        def to_training(self, **kwargs):
-            assert kwargs["return_labels"] is True
-            assert kwargs["return_loss_mask"] is True
-            assert kwargs["return_cu_seqlens"] is True
-            assert kwargs["tokens_field"] == TOKENS_FIELD
-            assert kwargs["rename_fields"] == {"input_ids": "tokens", "positions": "position_ids"}
-            assert kwargs["exclude_fields"] == ("ids", "texts")
-            return {
-                "tokens": torch.tensor([[1, 2, 3]]),
-                "labels": torch.tensor([[2, 3, -100]]),
-                "loss_mask": torch.tensor([[1.0, 1.0, 0.0]]),
-                "position_ids": torch.tensor([[0, 1, 0]]),
-                "cu_seqlens": torch.tensor([[0, 2, 3]], dtype=torch.int32),
-                "max_seqlen": torch.tensor([2], dtype=torch.int32),
-            }
-
+@pytest.mark.parametrize("eos_token_id", [0, 7])
+@pytest.mark.parametrize("eod_mask_loss", [False, True])
+@pytest.mark.parametrize("reset_position_ids", [False, True])
+@pytest.mark.parametrize("return_cu_seqlens", [False, True])
+@pytest.mark.filterwarnings("error:eos_token_id is ignored")
+def test_zephon_loader_maps_batches_to_megatron_schema(
+    eos_token_id: int, eod_mask_loss: bool, reset_position_ids: bool, return_cu_seqlens: bool
+) -> None:
+    tokens = [[1, 10, eos_token_id, 1, 20, eos_token_id], [1, 30, 31, eos_token_id, 1, 40]]
+    positions = [[0, 1, 2, 0, 1, 2], [0, 1, 2, 3, 0, 1]]
+    sample_batch = SampleBatch(
+        records=tuple(
+            SampleRecord(
+                meta=SampleMeta(sample_id=(0, 0, i), lane_id=0, chunk_id=0),
+                payload={TOKENS_FIELD: token_row, "positions": position_row},
+            )
+            for i, (token_row, position_row) in enumerate(zip(tokens, positions))
+        )
+    )
     loader = MegatronZephonDataLoader.__new__(MegatronZephonDataLoader)
-    loader._iterator = iter([FakeBatch()])
-    loader._eod_token_id = 2
-    loader._reset_position_ids = True
-    loader._eod_mask_loss = True
-    loader._return_cu_seqlens = True
+    loader._iterator = iter([sample_batch])
+    loader._eod_token_id = eos_token_id
+    loader._reset_position_ids = reset_position_ids
+    loader._eod_mask_loss = eod_mask_loss
+    loader._return_cu_seqlens = return_cu_seqlens
 
     batch = next(loader)
 
-    assert set(batch) == {
-        "tokens",
-        "labels",
-        "loss_mask",
-        "position_ids",
-        "cu_seqlens",
-        "max_seqlen",
-    }
-    assert torch.equal(batch["tokens"], torch.tensor([[1, 2, 3]]))
-    assert torch.equal(batch["labels"], torch.tensor([[2, 3, -100]]))
-    assert torch.equal(batch["loss_mask"], torch.tensor([[1.0, 0.0, 0.0]]))
-    assert torch.equal(batch["position_ids"], torch.tensor([[0, 1, 0]]))
-
-
-def test_zephon_loader_uses_contiguous_positions_when_resets_are_disabled() -> None:
-    class FakeBatch:
-        def to_training(self, **_kwargs):
-            return {
-                "tokens": torch.tensor([[1, 2, 3], [4, 5, 6]]),
-                "labels": torch.tensor([[2, 3, 4], [5, 6, 7]]),
-                "loss_mask": torch.ones(2, 3),
-                "position_ids": torch.tensor([[0, 1, 0], [0, 0, 1]]),
-            }
-
-    loader = MegatronZephonDataLoader.__new__(MegatronZephonDataLoader)
-    loader._iterator = iter([FakeBatch()])
-    loader._eod_token_id = 2
-    loader._reset_position_ids = False
-    loader._eod_mask_loss = False
-    loader._return_cu_seqlens = False
-
-    batch = next(loader)
-
-    assert torch.equal(batch["position_ids"], torch.tensor([[0, 1, 2], [0, 1, 2]]))
+    expected_keys = {"tokens", "labels", "loss_mask", "position_ids"}
+    if return_cu_seqlens:
+        expected_keys.update(("cu_seqlens", "max_seqlen"))
+        assert torch.equal(batch["cu_seqlens"], torch.tensor([[0, 3, 5], [0, 4, 5]]))
+        assert torch.equal(batch["max_seqlen"], torch.tensor([3, 4]))
+    assert set(batch) == expected_keys
+    assert torch.equal(batch["tokens"], torch.tensor(tokens)[:, :-1])
+    boundary_label = -100 if eod_mask_loss else 1
+    assert torch.equal(
+        batch["labels"],
+        torch.tensor(
+            [
+                [10, eos_token_id, boundary_label, 20, eos_token_id],
+                [30, 31, eos_token_id, boundary_label, 40],
+            ]
+        ),
+    )
+    boundary_loss = 0.0 if eod_mask_loss else 1.0
+    assert torch.equal(
+        batch["loss_mask"], torch.tensor([[1, 1, boundary_loss, 1, 1], [1, 1, 1, boundary_loss, 1]])
+    )
+    expected_positions = (
+        [row[:-1] for row in positions] if reset_position_ids else [list(range(5))] * 2
+    )
+    assert torch.equal(batch["position_ids"], torch.tensor(expected_positions))
 
 
 def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
@@ -215,7 +208,7 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
         mock.patch("megatron.training.datasets.zephon_dataloader.StaticMixtureWorkSource"),
         mock.patch("megatron.training.datasets.zephon_dataloader.TokenEstimation"),
     ):
-        MegatronZephonDataLoader(
+        loader = MegatronZephonDataLoader(
             config,
             tokenizer_id="example/tokenizer",
             bos_token_id=11,
@@ -229,6 +222,7 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
     assert pipeline.tokenize.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
     assert pipeline.tokenize.call_args.kwargs["bos_token_id"] == 11
     assert pipeline.tokenize.call_args.kwargs["eos_token_id"] == 12
+    assert loader._eod_token_id == pipeline.tokenize.call_args.kwargs["eos_token_id"]
     assert "tokenizer" not in pipeline.tokenize.call_args.kwargs
     pipeline.preflight_tokenizers.assert_called_once_with()
     pipeline.__iter__.assert_not_called()

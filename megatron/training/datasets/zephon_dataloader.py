@@ -322,26 +322,19 @@ class MegatronZephonDataLoader:
     def __next__(self) -> dict[str, torch.Tensor]:
         if self._iterator is None:
             self._iterator = iter(self._pipeline)
-        training_batch = next(self._iterator).to_training(
+        return next(self._iterator).to_training(
             tokens_field=TOKENS_FIELD,
             return_labels=True,
             return_loss_mask=True,
             return_cu_seqlens=self._return_cu_seqlens,
+            eos_mask_loss=self._eod_mask_loss,
+            eos_token_id=self._eod_token_id if self._eod_mask_loss else None,
+            position_mode="preserve" if self._reset_position_ids else "sequence",
             dtype=torch.long,
             ignore_index=-100,
             rename_fields={"input_ids": "tokens", "positions": "position_ids"},
             exclude_fields=("ids", "texts"),
         )
-        if self._eod_mask_loss:
-            training_batch["loss_mask"][training_batch["tokens"] == self._eod_token_id] = 0.0
-        if not self._reset_position_ids:
-            positions = torch.arange(
-                training_batch["tokens"].shape[-1],
-                dtype=torch.long,
-                device=training_batch["tokens"].device,
-            )
-            training_batch["position_ids"] = positions.expand_as(training_batch["tokens"])
-        return training_batch
 
     def save_state(self) -> dict[str, bytes]:
         """Return an opaque Zephon checkpoint for Megatron checkpointing."""
