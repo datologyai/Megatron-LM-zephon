@@ -311,9 +311,9 @@ class MegatronZephonDataLoader:
         self._pipeline = self._pipeline.batch(micro_batch_size, drop_last=True).options(**options)
         self._pipeline.preflight_tokenizers()
         self._iterator = None
-        self._eod_token_id = eos_token_id
+        self._eos_token_id = eos_token_id
         self._reset_position_ids = reset_position_ids
-        self._eod_mask_loss = eod_mask_loss
+        self._eos_mask_loss = eod_mask_loss
         self._return_cu_seqlens = return_cu_seqlens
 
     def __iter__(self) -> "MegatronZephonDataLoader":
@@ -327,8 +327,8 @@ class MegatronZephonDataLoader:
             return_labels=True,
             return_loss_mask=True,
             return_cu_seqlens=self._return_cu_seqlens,
-            eos_mask_loss=self._eod_mask_loss,
-            eos_token_id=self._eod_token_id if self._eod_mask_loss else None,
+            eos_mask_loss=self._eos_mask_loss,
+            eos_token_id=self._eos_token_id if self._eos_mask_loss else None,
             position_mode="preserve" if self._reset_position_ids else "sequence",
             dtype=torch.long,
             ignore_index=-100,

@@ -152,9 +152,9 @@ def test_zephon_loader_maps_batches_to_megatron_schema(
     )
     loader = MegatronZephonDataLoader.__new__(MegatronZephonDataLoader)
     loader._iterator = iter([sample_batch])
-    loader._eod_token_id = eos_token_id
+    loader._eos_token_id = eos_token_id
     loader._reset_position_ids = reset_position_ids
-    loader._eod_mask_loss = eod_mask_loss
+    loader._eos_mask_loss = eod_mask_loss
     loader._return_cu_seqlens = return_cu_seqlens
 
     batch = next(loader)
@@ -222,7 +222,7 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
     assert pipeline.tokenize.call_args.kwargs["tokenizer_id"] == "example/tokenizer"
     assert pipeline.tokenize.call_args.kwargs["bos_token_id"] == 11
     assert pipeline.tokenize.call_args.kwargs["eos_token_id"] == 12
-    assert loader._eod_token_id == pipeline.tokenize.call_args.kwargs["eos_token_id"]
+    assert loader._eos_token_id == pipeline.tokenize.call_args.kwargs["eos_token_id"]
     assert "tokenizer" not in pipeline.tokenize.call_args.kwargs
     pipeline.preflight_tokenizers.assert_called_once_with()
     pipeline.__iter__.assert_not_called()
