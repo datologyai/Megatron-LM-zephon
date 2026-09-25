@@ -11,6 +11,12 @@ Megatron-LM and Megatron Core
 
 <div align="left">
 
+> [!NOTE]
+> **Megatron-LM + Zephon reference integration:** This fork replaces
+> Megatron's GPT training dataloader with Zephon while leaving the model and
+> training stack intact. [Read and run the integration guide](examples/zephon/README.md).
+> Zephon is currently a private dependency and requires DatologyAI access.
+
 ## About
 
 This repository contains two components: **Megatron-LM** and **Megatron Core**.
