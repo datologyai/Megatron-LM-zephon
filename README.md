@@ -15,7 +15,7 @@ Megatron-LM and Megatron Core
 > **Megatron-LM + Zephon reference integration:** This fork replaces
 > Megatron's GPT training dataloader with Zephon while leaving the model and
 > training stack intact. [Read and run the integration guide](examples/zephon/README.md).
-> Zephon is currently a private dependency and requires DatologyAI access.
+> Install Zephon from PyPI with `uv pip install -r requirements-zephon.txt`.
 
 ## About
 

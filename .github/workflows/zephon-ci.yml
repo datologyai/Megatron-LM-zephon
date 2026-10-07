@@ -70,13 +70,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Check out Zephon
-        uses: actions/checkout@v7
-        with:
-          repository: datologyai/zephon
-          path: .ci/zephon
-          token: ${{ secrets.ZEPHON_READ_TOKEN }}
-          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -84,8 +77,7 @@ jobs:
         run: |
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install pytest triton click requests pyyaml numpy
-          python -m pip install -e ".ci/zephon[hf]"
-          python -m pip install "transformers>=4.44.0" "tokenizers>=0.22.0,<=0.23.0"
+          python -m pip install -r requirements-zephon.txt
       - name: Run public adapter tests
         run: |
           python -m pytest -q tests/unit_tests/data/test_zephon_dataloader.py
