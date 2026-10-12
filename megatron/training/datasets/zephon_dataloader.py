@@ -48,7 +48,8 @@ class ZephonDataConfig:
     shuffle_shards: bool = True
     shuffle_within_shard: bool = True
     shuffle_block_size: int | str | None = "auto"
-    token_estimation: bool = True
+    token_estimation: bool | None = None
+    """Token-aware mixing; None enables it only when there are several sources."""
     shuffle_after_pack: bool = True
     shuffle_buffer_size: int | None = None
     shuffle_parallelism: int | None = None
@@ -56,11 +57,14 @@ class ZephonDataConfig:
     canonical_replicas: int | None = None
     aggregate_dir: str | None = None
     run_id: str | None = None
-    fetch_parallelism: int | None = None
+    # Worker defaults are per rank, sized for several ranks per node.
+    fetch_parallelism: int | None = 2
     prefetch_buffer_size: int = 0
     prefetch_parallelism: int | None = None
-    tokenize_parallelism: int | None = None
-    pack_parallelism: int | None = None
+    tokenize_parallelism: int | None = 3
+    tokenize_special_tokens: str = "bos_eos"
+    """BOS/EOS policy for text; use "eos" for tokenizers without BOS."""
+    pack_parallelism: int | None = 1
     runner: str = "process"
     mtp_mode: bool | None = None
 
@@ -87,12 +91,15 @@ _CONFIG_KEYS = {
     "prefetch_buffer_size",
     "prefetch_parallelism",
     "tokenize_parallelism",
+    "tokenize_special_tokens",
     "pack_parallelism",
     "runner",
     "mtp_mode",
 }
 
 _SOURCE_KEYS = frozenset({"name", "path", "fmt", "weight"})
+
+_SPECIAL_TOKEN_POLICIES = ("bos_eos", "bos", "eos", "none", "tokenizer_default")
 
 
 def _resolve_recipe_path(value: str, recipe_dir: Path) -> str:
@@ -143,6 +150,14 @@ def load_zephon_data_config(path: str | os.PathLike[str]) -> ZephonDataConfig:
         raise ValueError("Zephon source weights must all be finite")
     if any(source.weight <= 0 for source in sources):
         raise ValueError("Zephon source weights must all be positive")
+
+    special_tokens = values.get("tokenize_special_tokens", "bos_eos")
+    if special_tokens not in _SPECIAL_TOKEN_POLICIES:
+        raise ValueError(
+            "Zephon tokenize_special_tokens must be one of "
+            + ", ".join(_SPECIAL_TOKEN_POLICIES)
+            + f"; got {special_tokens!r}"
+        )
 
     if values.get("shuffle_block_size") == "none":
         values["shuffle_block_size"] = None
@@ -263,6 +278,9 @@ class MegatronZephonDataLoader:
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
             for source in config.sources
         ]
+        use_token_estimation = config.token_estimation
+        if use_token_estimation is None:
+            use_token_estimation = len(config.sources) > 1
         work_source = StaticMixtureWorkSource(
             datasets=datasets,
             mixture=MixtureSpec({source.name: source.weight for source in config.sources}),
@@ -272,7 +290,7 @@ class MegatronZephonDataLoader:
             shuffle_shards=config.shuffle_shards,
             shuffle_within_shard=config.shuffle_within_shard,
             shuffle_block_size=config.shuffle_block_size,
-            token_estimation=TokenEstimation() if config.token_estimation else None,
+            token_estimation=TokenEstimation() if use_token_estimation else None,
         )
         pipeline = Pipeline(work_source)
         if config.prefetch_buffer_size:
@@ -292,9 +310,13 @@ class MegatronZephonDataLoader:
             add_attention_mask=False,
             max_length=sequence_length + 1,
             split_long_samples=True,
-            special_tokens="bos_eos",
-            bos_token_id=bos_token_id,
-            eos_token_id=eos_token_id,
+            special_tokens=config.tokenize_special_tokens,
+            bos_token_id=(
+                bos_token_id if config.tokenize_special_tokens in ("bos_eos", "bos") else None
+            ),
+            eos_token_id=(
+                eos_token_id if config.tokenize_special_tokens in ("bos_eos", "eos") else None
+            ),
             parallelism=config.tokenize_parallelism,
         ).pack_flat(
             max_length=sequence_length + 1,

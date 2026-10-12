@@ -110,7 +110,8 @@ weight = 1.0
 
 Relative paths are resolved from the recipe directory. Source weights are
 relative token proportions when `token_estimation = true`, which is the
-training default. Zephon normalizes the weights.
+default for recipes with more than one source; single-source recipes skip it.
+Zephon normalizes the weights.
 
 The scheduling controls are independent:
 
@@ -124,9 +125,10 @@ The scheduling controls are independent:
 
 Shard prefetch is off by default. Set `prefetch_buffer_size` and optionally
 `prefetch_parallelism` for remote datasets. `fetch_parallelism`,
-`tokenize_parallelism`, and `pack_parallelism` tune the individual stages. The
-default runner is `"process"`; leaving `mtp_mode` unset enables MTP for this
-tokenize-and-pack pipeline.
+`tokenize_parallelism`, and `pack_parallelism` set the worker processes per rank
+for each stage; the defaults (2 fetch, 3 tokenize, 1 pack) assume several ranks
+share a node. The default runner is `"process"`; leaving `mtp_mode` unset
+enables MTP for this tokenize-and-pack pipeline.
 
 `cache_limit_bytes` accepts either an integer byte count or a human-readable
 size such as `"50gb"`.
@@ -135,8 +137,11 @@ Megatron supplies the tokenizer identifier, sequence length, and microbatch
 size, so those settings stay in Megatron's launch configuration. Zephon loads
 its own tokenizer instance from the same `--tokenizer-model` value. The adapter
 also forwards Megatron's resolved BOS and EOS token IDs so Zephon's document
-boundaries cannot diverge from the model-facing tokenizer. Keep the tokenizer
-assets unchanged across resume.
+boundaries cannot diverge from the model-facing tokenizer.
+`tokenize_special_tokens` (`"bos_eos"` by default, or `"bos"`, `"eos"`,
+`"none"`, `"tokenizer_default"`) chooses which of them Zephon adds; use `"eos"`
+for tokenizers without a BOS token, such as Qwen3's. Keep the tokenizer assets
+unchanged across resume.
 
 ## Launch the entry point directly
 
