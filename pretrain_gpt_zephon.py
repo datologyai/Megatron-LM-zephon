@@ -2,23 +2,17 @@
 
 """Pretrain Megatron GPT with an opt-in Zephon training dataloader."""
 
+# Zephon's process runner spawns its workers, and spawned processes re-import
+# this script as __mp_main__. Keep module-level imports light so each worker
+# doesn't import all of Megatron: with eight ranks per node that is dozens of
+# concurrent imports, and it delays the first batch by minutes.
 import argparse
-
-import pretrain_gpt as gpt
-from megatron.core.enums import ModelType
-from megatron.training import inprocess_restart, pretrain
-from megatron.training.argument_utils import (
-    gpt_config_from_args,
-    pretrain_cfg_container_from_args,
-    resolve_tokenizer_vocab_size,
-)
-from megatron.training.arguments import parse_and_validate_args
-from megatron.training.datasets.zephon_dataloader import zephon_train_valid_test_datasets_provider
-from megatron.training.global_vars import initialize_runtime_services
 
 
 def add_zephon_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Add arguments owned by the Zephon integration."""
+
+    import pretrain_gpt as gpt
 
     group = parser.add_argument_group(title="Zephon dataloader")
     group.add_argument("--zephon-data-config", required=True, help="Zephon TOML data recipe")
@@ -46,7 +40,24 @@ def add_zephon_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return parser
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Parse Megatron and Zephon arguments, then run GPT pretraining."""
+
+    import pretrain_gpt as gpt
+
+    from megatron.core.enums import ModelType
+    from megatron.training import inprocess_restart, pretrain
+    from megatron.training.argument_utils import (
+        gpt_config_from_args,
+        pretrain_cfg_container_from_args,
+        resolve_tokenizer_vocab_size,
+    )
+    from megatron.training.arguments import parse_and_validate_args
+    from megatron.training.datasets.zephon_dataloader import (
+        zephon_train_valid_test_datasets_provider,
+    )
+    from megatron.training.global_vars import initialize_runtime_services
+
     wrapped_pretrain, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
     args = parse_and_validate_args(
         extra_args_provider=add_zephon_args,
@@ -75,3 +86,7 @@ if __name__ == "__main__":
         store=store,
         get_embedding_ranks=gpt.get_embedding_ranks,
     )
+
+
+if __name__ == "__main__":
+    main()
