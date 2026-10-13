@@ -44,7 +44,6 @@ def main() -> None:
     """Parse Megatron and Zephon arguments, then run GPT pretraining."""
 
     import pretrain_gpt as gpt
-
     from megatron.core.enums import ModelType
     from megatron.training import inprocess_restart, pretrain
     from megatron.training.argument_utils import (
