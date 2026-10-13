@@ -37,7 +37,15 @@ def test_load_zephon_data_config(tmp_path: Path) -> None:
     ]
     assert config.sources[0].path == str(repo_root / "tests/assets/zephon_mixture/prose")
     assert config.chunk_size == 4
-    assert ZephonDataConfig(sources=()).chunk_size == 16_384
+    defaults = ZephonDataConfig(sources=())
+    assert defaults.chunk_size == 16_384
+    assert defaults.token_estimation is None
+    assert defaults.tokenize_special_tokens == "bos_eos"
+    assert (
+        defaults.fetch_parallelism,
+        defaults.tokenize_parallelism,
+        defaults.pack_parallelism,
+    ) == (2, 3, 1)
 
     invalid_recipes = {
         "duplicate.toml": (
@@ -70,6 +78,16 @@ path = "data"
 wieght = 9.0
 """,
             "Unknown Zephon source fields: wieght",
+        ),
+        "special-tokens.toml": (
+            """
+tokenize_special_tokens = "bos-eos"
+
+[[sources]]
+name = "data"
+path = "data"
+""",
+            "tokenize_special_tokens must be one of",
         ),
         "nan-weight.toml": (
             """
@@ -188,6 +206,7 @@ def test_zephon_loader_maps_batches_to_megatron_schema(
 
 def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
     pipeline = mock.MagicMock()
+    pipeline.fetch_parallelism.return_value = pipeline
     pipeline.tokenize.return_value = pipeline
     pipeline.pack_flat.return_value = pipeline
     pipeline.shuffle.return_value = pipeline
@@ -226,6 +245,72 @@ def test_zephon_loader_constructs_its_own_tokenizer_from_identifier() -> None:
     assert "tokenizer" not in pipeline.tokenize.call_args.kwargs
     pipeline.preflight_tokenizers.assert_called_once_with()
     pipeline.__iter__.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("special_tokens", "expected_bos", "expected_eos"),
+    [("bos_eos", 11, 12), ("bos", 11, None), ("eos", None, 12), ("none", None, None)],
+)
+@pytest.mark.parametrize(
+    ("source_names", "token_estimation", "expect_estimation"),
+    [
+        (("source",), None, False),
+        (("prose", "code"), None, True),
+        (("source",), True, True),
+        (("prose", "code"), False, False),
+    ],
+)
+def test_loader_applies_special_token_and_token_estimation_policies(
+    special_tokens: str,
+    expected_bos: int | None,
+    expected_eos: int | None,
+    source_names: tuple[str, ...],
+    token_estimation: bool | None,
+    expect_estimation: bool,
+) -> None:
+    pipeline = mock.MagicMock()
+    for method in ("tokenize", "pack_flat", "shuffle", "batch", "options", "fetch_parallelism"):
+        getattr(pipeline, method).return_value = pipeline
+    config = ZephonDataConfig(
+        sources=tuple(ZephonSource(name=name, path=name) for name in source_names),
+        canonical_replicas=1,
+        token_estimation=token_estimation,
+        tokenize_special_tokens=special_tokens,
+    )
+
+    with (
+        mock.patch("megatron.training.datasets.zephon_dataloader.Pipeline", return_value=pipeline),
+        mock.patch("megatron.training.datasets.zephon_dataloader.Dataset"),
+        mock.patch("megatron.training.datasets.zephon_dataloader.MixtureSpec"),
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.StaticMixtureWorkSource"
+        ) as work_source_type,
+        mock.patch(
+            "megatron.training.datasets.zephon_dataloader.TokenEstimation"
+        ) as token_estimation_type,
+    ):
+        loader = MegatronZephonDataLoader(
+            config,
+            tokenizer_id="example/tokenizer",
+            bos_token_id=11,
+            eos_token_id=12,
+            micro_batch_size=2,
+            sequence_length=16,
+            data_parallel_rank=0,
+            data_parallel_size=1,
+        )
+
+    tokenize_kwargs = pipeline.tokenize.call_args.kwargs
+    assert tokenize_kwargs["special_tokens"] == special_tokens
+    assert tokenize_kwargs["bos_token_id"] == expected_bos
+    assert tokenize_kwargs["eos_token_id"] == expected_eos
+    # EOD loss masking still uses the model-facing EOS whatever Zephon adds.
+    assert loader._eos_token_id == 12
+    pipeline.fetch_parallelism.assert_called_once_with(2)
+    assert tokenize_kwargs["parallelism"] == 3
+    assert pipeline.pack_flat.call_args.kwargs["parallelism"] == 1
+    expected_estimation = token_estimation_type.return_value if expect_estimation else None
+    assert work_source_type.call_args.kwargs["token_estimation"] is expected_estimation
 
 
 def test_runtime_options_use_data_parallel_coordination_identity() -> None:
