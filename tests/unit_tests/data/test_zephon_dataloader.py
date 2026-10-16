@@ -136,6 +136,7 @@ def test_runtime_values_override_reusable_recipe() -> None:
     args = SimpleNamespace(
         zephon_canonical_replicas=4,
         zephon_aggregate_dir="/shared/aggregate",
+        zephon_aggregate_store=None,
         zephon_run_id="example-run",
     )
 
@@ -147,6 +148,22 @@ def test_runtime_values_override_reusable_recipe() -> None:
     assert updated.canonical_replicas == 4
     assert updated.aggregate_dir == "/shared/aggregate"
     assert updated.run_id == "example-run"
+
+
+def test_runtime_aggregate_store_override() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    config = load_zephon_data_config(repo_root / "examples/zephon/elastic_local_jsonl.toml")
+    args = SimpleNamespace(
+        zephon_canonical_replicas=None,
+        zephon_aggregate_dir=None,
+        zephon_aggregate_store="torch://",
+        zephon_run_id="example-run",
+    )
+
+    updated = apply_zephon_runtime_overrides(config, args)
+
+    assert updated.aggregate_store == "torch://"
+    assert updated.aggregate_dir is None
 
 
 @pytest.mark.parametrize("eos_token_id", [0, 7])
@@ -319,6 +336,7 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         cache_dir="/cache",
         cache_limit_bytes="50gb",
         aggregate_dir="/aggregate",
+        aggregate_store=None,
         run_id="run",
         runner="process",
         mtp_mode=None,
@@ -350,6 +368,46 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
     assert io_options.cache.limit_bytes == 50 * 1024**3
 
 
+def test_runtime_options_pass_aggregate_store() -> None:
+    config = SimpleNamespace(
+        canonical_replicas=None,
+        cache_dir=None,
+        aggregate_dir=None,
+        aggregate_store="torch://",
+        run_id="run",
+        runner="process",
+        mtp_mode=None,
+    )
+
+    options = _build_zephon_runtime_options(config, data_parallel_rank=0, data_parallel_size=2)
+
+    assert options["aggregate_store"] == "torch://"
+    assert "aggregate_dir" not in options
+
+
+def test_loader_rejects_both_aggregate_dir_and_store() -> None:
+    config = SimpleNamespace(
+        sources=(),
+        canonical_replicas=2,
+        aggregate_dir="/aggregate",
+        aggregate_store="torch://",
+        run_id="run",
+    )
+
+    with pytest.raises(ValueError, match="at most one"):
+        MegatronZephonDataLoader(
+            config,
+            tokenizer_id="example/tokenizer",
+            bos_token_id=1,
+            eos_token_id=2,
+            micro_batch_size=1,
+            sequence_length=16,
+            data_parallel_rank=0,
+            data_parallel_size=2,
+            num_batches_per_train_step=2,
+        )
+
+
 @pytest.mark.parametrize(
     ("canonical_replicas", "data_parallel_size", "num_batches_per_train_step", "message"),
     [
@@ -361,7 +419,11 @@ def test_loader_rejects_invalid_elastic_alignment(
     canonical_replicas: int, data_parallel_size: int, num_batches_per_train_step: int, message: str
 ) -> None:
     config = SimpleNamespace(
-        sources=(), canonical_replicas=canonical_replicas, aggregate_dir="/aggregate", run_id="run"
+        sources=(),
+        canonical_replicas=canonical_replicas,
+        aggregate_dir="/aggregate",
+        aggregate_store=None,
+        run_id="run",
     )
 
     with pytest.raises(ValueError, match=message):
@@ -582,6 +644,7 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
         ),
         zephon_canonical_replicas=None,
         zephon_aggregate_dir=None,
+        zephon_aggregate_store=None,
         zephon_run_id=None,
         micro_batch_size=2,
         seq_length=16,

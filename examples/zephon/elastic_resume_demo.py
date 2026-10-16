@@ -102,6 +102,7 @@ def _worker(args: argparse.Namespace) -> None:
         SimpleNamespace(
             zephon_canonical_replicas=None,
             zephon_aggregate_dir=str(args.output_dir / "aggregate"),
+            zephon_aggregate_store=None,
             zephon_run_id=args.run_id,
         ),
     )

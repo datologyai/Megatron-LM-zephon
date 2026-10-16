@@ -28,6 +28,12 @@ def add_zephon_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Shared directory used to aggregate Zephon checkpoint state",
     )
     group.add_argument(
+        "--zephon-aggregate-store",
+        default=None,
+        help="Key-value store URI used instead of --zephon-aggregate-dir to aggregate "
+        "Zephon checkpoint state; torch:// uses torchrun's TCPStore",
+    )
+    group.add_argument(
         "--zephon-run-id", default=None, help="Stable identity for the Zephon data stream"
     )
     group.add_argument(

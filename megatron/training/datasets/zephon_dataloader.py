@@ -56,6 +56,8 @@ class ZephonDataConfig:
     repeat: bool = True
     canonical_replicas: int | None = None
     aggregate_dir: str | None = None
+    aggregate_store: str | None = None
+    """Key-value store URI used instead of aggregate_dir; torch:// uses torchrun's TCPStore."""
     run_id: str | None = None
     # Worker defaults are per rank, sized for several ranks per node.
     fetch_parallelism: int | None = 2
@@ -86,6 +88,7 @@ _CONFIG_KEYS = {
     "repeat",
     "canonical_replicas",
     "aggregate_dir",
+    "aggregate_store",
     "run_id",
     "fetch_parallelism",
     "prefetch_buffer_size",
@@ -180,6 +183,7 @@ def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> Zepho
         for name, value in {
             "canonical_replicas": args.zephon_canonical_replicas,
             "aggregate_dir": args.zephon_aggregate_dir,
+            "aggregate_store": args.zephon_aggregate_store,
             "run_id": args.zephon_run_id,
         }.items()
         if value is not None
@@ -214,6 +218,8 @@ def _build_zephon_runtime_options(
         )
     if config.aggregate_dir is not None:
         options["aggregate_dir"] = config.aggregate_dir
+    if config.aggregate_store is not None:
+        options["aggregate_store"] = config.aggregate_store
     if config.run_id is not None:
         options["run_id"] = config.run_id
     return options
@@ -269,9 +275,14 @@ class MegatronZephonDataLoader:
                 "Zephon canonical_replicas so checkpoints land on complete lane-window "
                 "boundaries"
             )
-        if data_parallel_size > 1 and (not config.aggregate_dir or not config.run_id):
+        if config.aggregate_dir and config.aggregate_store:
+            raise ValueError("Set at most one of Zephon aggregate_dir and aggregate_store")
+        if data_parallel_size > 1 and (
+            not (config.aggregate_dir or config.aggregate_store) or not config.run_id
+        ):
             raise ValueError(
-                "Distributed Zephon runs require aggregate_dir and run_id in the data recipe"
+                "Distributed Zephon runs require aggregate_dir or aggregate_store, and "
+                "run_id, in the data recipe"
             )
 
         datasets = [
