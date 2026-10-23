@@ -100,9 +100,7 @@ def _worker(args: argparse.Namespace) -> None:
     config = apply_zephon_runtime_overrides(
         recipe_config,
         SimpleNamespace(
-            zephon_canonical_replicas=None,
-            zephon_aggregate_dir=str(args.output_dir / "aggregate"),
-            zephon_run_id=args.run_id,
+            zephon_canonical_replicas=None, zephon_aggregate_dir=None, zephon_run_id=args.run_id
         ),
     )
     # Each data-only worker is already a short-lived torchrun subprocess. Keep
