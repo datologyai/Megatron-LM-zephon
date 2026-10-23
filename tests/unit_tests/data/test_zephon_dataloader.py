@@ -136,6 +136,7 @@ def test_runtime_values_override_reusable_recipe() -> None:
     args = SimpleNamespace(
         zephon_canonical_replicas=4,
         zephon_aggregate_dir="/shared/aggregate",
+        zephon_aggregate_store=None,
         zephon_run_id="example-run",
     )
 
@@ -147,6 +148,53 @@ def test_runtime_values_override_reusable_recipe() -> None:
     assert updated.canonical_replicas == 4
     assert updated.aggregate_dir == "/shared/aggregate"
     assert updated.run_id == "example-run"
+
+
+@pytest.mark.parametrize(
+    ("recipe", "aggregate_dir", "aggregate_store", "expected"),
+    [
+        ({"aggregate_dir": "/recipe"}, None, "torch://host:1", (None, "torch://host:1")),
+        ({"aggregate_store": "torch://"}, "/launch", None, ("/launch", None)),
+        ({"aggregate_store": "torch://"}, None, None, (None, "torch://")),
+    ],
+)
+def test_launch_aggregation_target_replaces_recipe_target(
+    recipe: dict, aggregate_dir: str | None, aggregate_store: str | None, expected: tuple
+) -> None:
+    config = ZephonDataConfig(sources=(), **recipe)
+    args = SimpleNamespace(
+        zephon_canonical_replicas=None,
+        zephon_aggregate_dir=aggregate_dir,
+        zephon_aggregate_store=aggregate_store,
+        zephon_run_id=None,
+    )
+
+    updated = apply_zephon_runtime_overrides(config, args)
+
+    assert (updated.aggregate_dir, updated.aggregate_store) == expected
+
+
+def test_launch_rejects_two_aggregation_targets() -> None:
+    args = SimpleNamespace(
+        zephon_canonical_replicas=None,
+        zephon_aggregate_dir="/launch",
+        zephon_aggregate_store="torch://",
+        zephon_run_id=None,
+    )
+
+    with pytest.raises(ValueError, match="at most one"):
+        apply_zephon_runtime_overrides(ZephonDataConfig(sources=()), args)
+
+
+def test_recipe_rejects_two_aggregation_targets(tmp_path: Path) -> None:
+    recipe = tmp_path / "recipe.toml"
+    recipe.write_text(
+        'aggregate_dir = "aggregate"\naggregate_store = "torch://"\n'
+        '[[sources]]\nname = "source"\npath = "data"\n'
+    )
+
+    with pytest.raises(ValueError, match="at most one"):
+        load_zephon_data_config(recipe)
 
 
 @pytest.mark.parametrize("eos_token_id", [0, 7])
@@ -319,6 +367,7 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
         cache_dir="/cache",
         cache_limit_bytes="50gb",
         aggregate_dir="/aggregate",
+        aggregate_store=None,
         run_id="run",
         runner="process",
         mtp_mode=None,
@@ -348,6 +397,23 @@ def test_runtime_options_use_data_parallel_coordination_identity() -> None:
     assert io_options.cache.enabled is True
     assert str(io_options.cache.root) == "/cache"
     assert io_options.cache.limit_bytes == 50 * 1024**3
+
+
+@pytest.mark.parametrize(
+    ("aggregate_store", "data_parallel_size", "expected"),
+    [(None, 2, "torch://"), ("torch://host:29500", 2, "torch://host:29500"), (None, 1, None)],
+)
+def test_runtime_options_aggregate_through_store_without_directory(
+    aggregate_store: str | None, data_parallel_size: int, expected: str | None
+) -> None:
+    config = ZephonDataConfig(sources=(), aggregate_store=aggregate_store, run_id="run")
+
+    options = _build_zephon_runtime_options(
+        config, data_parallel_rank=0, data_parallel_size=data_parallel_size
+    )
+
+    assert "aggregate_dir" not in options
+    assert options.get("aggregate_store") == expected
 
 
 @pytest.mark.parametrize(
@@ -582,6 +648,7 @@ def test_provider_gives_zephon_its_own_tokenizer_identifier() -> None:
         ),
         zephon_canonical_replicas=None,
         zephon_aggregate_dir=None,
+        zephon_aggregate_store=None,
         zephon_run_id=None,
         micro_batch_size=2,
         seq_length=16,

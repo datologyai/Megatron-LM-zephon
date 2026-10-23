@@ -130,6 +130,14 @@ for each stage; the defaults (2 fetch, 3 tokenize, 1 pack) assume several ranks
 share a node. The default runner is `"process"`; leaving `mtp_mode` unset
 enables MTP for this tokenize-and-pack pipeline.
 
+Distributed runs aggregate Zephon checkpoint state through torchrun's c10d
+TCPStore at `MASTER_ADDR`/`MASTER_PORT` (`aggregate_store = "torch://"`), so no
+shared filesystem is needed. Set `aggregate_store = "torch://host:port"` (or
+`--zephon-aggregate-store`) to name another store, or set `aggregate_dir` (or
+`--zephon-aggregate-dir`) to aggregate through a shared directory or object
+store instead. Set at most one of the two; a launch-time value replaces the
+recipe's choice.
+
 `cache_limit_bytes` accepts either an integer byte count or a human-readable
 size such as `"50gb"`.
 
@@ -157,15 +165,15 @@ arguments, and add:
 --context-parallel-size 1
 ```
 
-Elastic launches also require stable `--zephon-canonical-replicas`,
-`--zephon-aggregate-dir`, and `--zephon-run-id` values. The canonical lane
+Elastic launches also require stable `--zephon-canonical-replicas` and
+`--zephon-run-id` values. The canonical lane
 count must be divisible by every supported DP degree, and every optimizer step
 must consume a whole number of canonical lane windows. Batch-size ramp-up is
 not supported by this reference integration, including
 `--step-batch-size-schedule`.
 
 Keep the recipe, tokenizer, sequence length, seed, logical global batch,
-canonical lane count, aggregate directory, and run ID unchanged across resume.
+canonical lane count, and run ID unchanged across resume.
 The physical data-parallel degree may change. Resume only from a completed
 model checkpoint with the corresponding dataloader checkpoint directory.
 Model checkpointing through `--save` requires `--dataloader-save`; iteration-zero

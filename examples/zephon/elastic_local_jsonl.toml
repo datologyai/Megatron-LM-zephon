@@ -1,6 +1,7 @@
 # The common token-aware, two-canonical-lane recipe shared by the integrations.
-# Supply aggregate_dir and run_id at launch time because they identify a
-# particular shared run, not this reusable data recipe.
+# Supply run_id at launch time because it identifies a particular shared run,
+# not this reusable data recipe. Checkpoint aggregation uses torchrun's TCPStore
+# unless an aggregate directory is supplied at launch.
 
 text_field = "text"
 seed = 42

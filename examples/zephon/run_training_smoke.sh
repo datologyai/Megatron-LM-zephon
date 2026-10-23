@@ -29,7 +29,6 @@ cd "${repo_root}"
 common_args=(
     --zephon-data-config examples/zephon/elastic_local_jsonl.toml
     --zephon-canonical-replicas "${canonical_replicas}"
-    --zephon-aggregate-dir "${dump_folder}/zephon-aggregate"
     --zephon-run-id "${run_id}"
     --dataloader-save "${dump_folder}/dataloader"
     --save "${dump_folder}/model"

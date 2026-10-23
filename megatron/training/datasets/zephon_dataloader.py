@@ -23,6 +23,8 @@ from megatron.training import get_args, get_tokenizer, print_rank_0
 from megatron.training.checkpointing import get_checkpoint_name
 
 TOKENS_FIELD = "input_ids"
+DEFAULT_AGGREGATE_STORE = "torch://"
+"""torchrun's c10d TCPStore at MASTER_ADDR/MASTER_PORT."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +58,8 @@ class ZephonDataConfig:
     repeat: bool = True
     canonical_replicas: int | None = None
     aggregate_dir: str | None = None
+    aggregate_store: str | None = None
+    """Checkpoint aggregation store URI; distributed runs default to torch://."""
     run_id: str | None = None
     # Worker defaults are per rank, sized for several ranks per node.
     fetch_parallelism: int | None = 2
@@ -86,6 +90,7 @@ _CONFIG_KEYS = {
     "repeat",
     "canonical_replicas",
     "aggregate_dir",
+    "aggregate_store",
     "run_id",
     "fetch_parallelism",
     "prefetch_buffer_size",
@@ -168,8 +173,16 @@ def load_zephon_data_config(path: str | os.PathLike[str]) -> ZephonDataConfig:
             if not value:
                 raise ValueError(f"Zephon {key} must not be empty when set")
             values[key] = _resolve_recipe_path(str(value), recipe_path.parent)
+    if values.get("aggregate_store") is not None and not values["aggregate_store"]:
+        raise ValueError("Zephon aggregate_store must not be empty when set")
+    _validate_aggregation_target(values.get("aggregate_dir"), values.get("aggregate_store"))
 
     return ZephonDataConfig(sources=tuple(sources), **values)
+
+
+def _validate_aggregation_target(aggregate_dir: str | None, aggregate_store: str | None) -> None:
+    if aggregate_dir and aggregate_store:
+        raise ValueError("Set at most one of Zephon aggregate_dir and aggregate_store")
 
 
 def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> ZephonDataConfig:
@@ -180,11 +193,19 @@ def apply_zephon_runtime_overrides(config: ZephonDataConfig, args: Any) -> Zepho
         for name, value in {
             "canonical_replicas": args.zephon_canonical_replicas,
             "aggregate_dir": args.zephon_aggregate_dir,
+            "aggregate_store": getattr(args, "zephon_aggregate_store", None),
             "run_id": args.zephon_run_id,
         }.items()
         if value is not None
     }
-    return replace(config, **overrides)
+    # A launch-time aggregation target replaces whichever one the recipe chose.
+    if "aggregate_dir" in overrides and "aggregate_store" not in overrides:
+        overrides["aggregate_store"] = None
+    elif "aggregate_store" in overrides and "aggregate_dir" not in overrides:
+        overrides["aggregate_dir"] = None
+    updated = replace(config, **overrides)
+    _validate_aggregation_target(updated.aggregate_dir, updated.aggregate_store)
+    return updated
 
 
 def _build_zephon_runtime_options(
@@ -214,6 +235,10 @@ def _build_zephon_runtime_options(
         )
     if config.aggregate_dir is not None:
         options["aggregate_dir"] = config.aggregate_dir
+    elif config.aggregate_store is not None:
+        options["aggregate_store"] = config.aggregate_store
+    elif data_parallel_size > 1:
+        options["aggregate_store"] = DEFAULT_AGGREGATE_STORE
     if config.run_id is not None:
         options["run_id"] = config.run_id
     return options
@@ -269,10 +294,8 @@ class MegatronZephonDataLoader:
                 "Zephon canonical_replicas so checkpoints land on complete lane-window "
                 "boundaries"
             )
-        if data_parallel_size > 1 and (not config.aggregate_dir or not config.run_id):
-            raise ValueError(
-                "Distributed Zephon runs require aggregate_dir and run_id in the data recipe"
-            )
+        if data_parallel_size > 1 and not config.run_id:
+            raise ValueError("Distributed Zephon runs require run_id in the data recipe")
 
         datasets = [
             Dataset.from_path(name=source.name, path=source.path, fmt=source.fmt)
