@@ -1595,7 +1595,9 @@ def maybe_save_dataloader_state(
     dataloader whose `save_state` returns the same state on every data-parallel rank can set
     `is_save_state_rank_independent = True` on the iterable; then only data rank 0 writes,
     to `train_dataloader_dprank000.pt`, and every rank restores from that file. `save_state`
-    is then called on data rank 0 only, so it must not be collective.
+    is then called on data rank 0 only by default. If gathering this state requires all
+    data ranks, also set `is_save_state_collective = True`: every participating data rank
+    calls `save_state`, but only data rank 0 creates the directory and writes the result.
 
     Args:
         train_iterator (iterable): Train dataloader.
@@ -1609,6 +1611,7 @@ def maybe_save_dataloader_state(
         cp_group (ProcessGroup): Context-parallel group, or the MPU group when available.
             No group preserves the TP0/PP0 writer behavior without requiring MPU initialization.
     """
+
     # If no dataloader or saving path is provided, exit early, otherwise, raise an error.
     if train_iterator is None or dataloader_save_path is None or dataloader_save_path == '':
         return
@@ -1645,10 +1648,13 @@ def maybe_save_dataloader_state(
     is_save_state_rank_independent = getattr(
         train_iterator.iterable, 'is_save_state_rank_independent', False
     )
-    # Ranks that will not write anything skip building the state at all.
+    is_save_state_collective = getattr(train_iterator.iterable, 'is_save_state_collective', False)
+    # Collective state gathering and file ownership are independent decisions.
     writes_state_file = dp_rank == 0 or not is_save_state_rank_independent
     train_dataloader_state_dict = (
-        train_iterator.iterable.save_state() if writes_state_file else None
+        train_iterator.iterable.save_state()
+        if writes_state_file or is_save_state_collective
+        else None
     )
     state_file_rank = 0 if is_save_state_rank_independent else dp_rank
     if dp_rank == 0:
@@ -1677,7 +1683,7 @@ def maybe_save_dataloader_state(
 
     torch.distributed.barrier(group=data_parallel_group)
 
-    if train_dataloader_state_dict is None:
+    if not writes_state_file or train_dataloader_state_dict is None:
         return
 
     dataloader_save_dict = {}

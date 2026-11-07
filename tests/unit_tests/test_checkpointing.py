@@ -167,7 +167,10 @@ def test_maybe_save_dataloader_state_uses_explicit_process_groups(tmp_path):
 
 @pytest.mark.parametrize("dp_rank", [0, 3])
 @pytest.mark.parametrize("cp_rank", [None, 0, 1])
-def test_maybe_save_dataloader_state_rank_independent_writes_one_file(tmp_path, dp_rank, cp_rank):
+@pytest.mark.parametrize("collective", [False, True])
+def test_maybe_save_dataloader_state_rank_independent_writes_one_file(
+    tmp_path, dp_rank, cp_rank, collective
+):
     """Rank-independent state is written only by data rank 0 on the first CP rank."""
     groups = {
         "tp": SimpleNamespace(rank=0, size=1),
@@ -184,7 +187,11 @@ def test_maybe_save_dataloader_state_rank_independent_writes_one_file(tmp_path, 
         return {"global_sequence_id": 16}
 
     iterator = SimpleNamespace(
-        iterable=SimpleNamespace(save_state=save_state, is_save_state_rank_independent=True)
+        iterable=SimpleNamespace(
+            save_state=save_state,
+            is_save_state_rank_independent=True,
+            is_save_state_collective=collective,
+        )
     )
 
     with (
@@ -220,18 +227,20 @@ def test_maybe_save_dataloader_state_rank_independent_writes_one_file(tmp_path, 
         assert barriers == []
         assert saved == []
         assert save_state_calls == []
+        assert not list(tmp_path.iterdir())
         return
 
-    # All DP ranks on the first CP rank join the barriers; only DP0 builds and writes state.
+    # Only DP0 writes; collective loaders still gather state on every participating DP rank.
     assert barriers == [groups["dp"], groups["dp"]]
+    assert save_state_calls == ([True] if dp_rank == 0 or collective else [])
     if dp_rank == 0:
         assert saved[0][1] == str(
             tmp_path / "iter_0000002" / "mp_rank_00" / "train_dataloader_dprank000.pt"
         )
-        assert save_state_calls == [True]
+        assert os.path.isdir(os.path.dirname(saved[0][1]))
     else:
         assert saved == []
-        assert save_state_calls == []
+        assert not list(tmp_path.iterdir())
 
 
 def test_maybe_save_dataloader_state_skips_empty_state_after_barriers(tmp_path):
