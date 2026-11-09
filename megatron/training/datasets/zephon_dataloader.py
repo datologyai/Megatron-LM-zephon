@@ -259,6 +259,10 @@ def _zephon_tokenizer_id_from_args(args: Any) -> str:
 class MegatronZephonDataLoader:
     """Iterator adapting a Zephon pipeline to Megatron's GPT batch schema."""
 
+    # Every pipeline joins checkpoint aggregation; only DP0 persists the merged result.
+    is_save_state_rank_independent = True
+    is_save_state_collective = True
+
     def __init__(
         self,
         config: ZephonDataConfig,

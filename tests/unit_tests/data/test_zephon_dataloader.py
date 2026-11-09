@@ -480,6 +480,44 @@ def _save_with_megatron(
     return Path(path)
 
 
+@pytest.mark.parametrize("dp_rank", [0, 1])
+def test_zephon_checkpoint_gathers_on_every_rank_but_only_dp0_writes(tmp_path, dp_rank):
+    """All pipelines aggregate state without nonzero ranks touching checkpoint directories."""
+    loader = MegatronZephonDataLoader.__new__(MegatronZephonDataLoader)
+    loader._pipeline = mock.Mock()
+    loader._pipeline.checkpoint.return_value = {"lanes": [0, 1]}
+    iterator = SimpleNamespace(iterable=loader)
+
+    with (
+        mock.patch(
+            "megatron.training.checkpointing.get_pg_rank", side_effect=lambda group: group.rank
+        ),
+        mock.patch(
+            "megatron.training.checkpointing.get_pg_size", side_effect=lambda group: group.size
+        ),
+        mock.patch("megatron.training.checkpointing.torch.distributed.barrier") as barrier,
+    ):
+        maybe_save_dataloader_state(
+            iterator,
+            7,
+            tmp_path,
+            tp_group=SimpleNamespace(rank=0, size=1),
+            pp_group=SimpleNamespace(rank=0, size=1),
+            dp_group=SimpleNamespace(rank=dp_rank, size=2),
+            cp_group=SimpleNamespace(rank=0, size=1),
+        )
+
+    loader._pipeline.checkpoint.assert_called_once_with()
+    assert barrier.call_count == 2
+    if dp_rank == 0:
+        (path,) = tmp_path.rglob("*.pt")
+        assert path.name == "train_dataloader_dprank000.pt"
+        state = torch.load(path, weights_only=False)["dataloader_state_dict"]
+        assert pickle.loads(state["zephon"]) == {"lanes": [0, 1]}
+    else:
+        assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize("pp_size,ep_size", [(1, 1), (2, 1), (1, 8), (2, 8)])
 def test_restore_path_matches_megatron_save_path(
     tmp_path: Path, pp_size: int, ep_size: int
