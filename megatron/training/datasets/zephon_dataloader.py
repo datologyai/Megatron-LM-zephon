@@ -19,7 +19,7 @@ from zephon.work import MixtureSpec, StaticMixtureWorkSource, TokenEstimation
 
 from megatron.core import mpu
 from megatron.core.num_microbatches_calculator import get_num_microbatches
-from megatron.training import get_args, get_tokenizer, print_rank_0
+from megatron.training import get_args, get_tokenizer, get_train_state, print_rank_0
 from megatron.training.checkpointing import get_checkpoint_name
 
 TOKENS_FIELD = "input_ids"
@@ -407,13 +407,13 @@ class MegatronZephonDataLoader:
         self._iterator = None
 
 
-def _zephon_dataloader_checkpoint_path(args: Any) -> str:
+def _zephon_dataloader_checkpoint_path(args: Any, iteration: int) -> str:
     """Select the complete Zephon checkpoint owned by canonical DP rank 0."""
 
     # Must match the path maybe_save_dataloader_state writes: DP-sharded only, under TP0/PP0.
     return get_checkpoint_name(
         args.dataloader_save,
-        args.iteration,
+        iteration,
         tensor_rank=0,
         pipeline_rank=0,
         expert_parallel=False,
@@ -423,15 +423,16 @@ def _zephon_dataloader_checkpoint_path(args: Any) -> str:
 
 
 def _restore_dataloader_state(loader: MegatronZephonDataLoader, args: Any) -> None:
-    if args.load is None or args.iteration == 0:
+    iteration = get_train_state().iteration
+    if args.load is None or iteration == 0:
         return
     if not args.dataloader_save:
         raise ValueError("Zephon resume with --load requires --dataloader-save")
 
-    state_path = _zephon_dataloader_checkpoint_path(args)
+    state_path = _zephon_dataloader_checkpoint_path(args, iteration)
     if not os.path.exists(state_path):
         raise FileNotFoundError(
-            f"Zephon dataloader checkpoint for iteration {args.iteration} was not found at "
+            f"Zephon dataloader checkpoint for iteration {iteration} was not found at "
             f"{state_path}"
         )
     try:
