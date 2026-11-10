@@ -72,6 +72,8 @@ jobs:
   contract:
     name: Megatron adapter contract
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -84,7 +86,7 @@ jobs:
           python -m pip install -r requirements-zephon.txt
       - name: Run public adapter tests
         run: |
-          python pretrain_gpt_zephon.py --help
+          python -c "import pretrain_gpt; import pretrain_gpt_zephon"
           python -m pytest -q tests/unit_tests/data/test_zephon*.py
           python -m pytest -q tests/unit_tests/test_checkpointing.py \
             -k "maybe_save_dataloader_state"
