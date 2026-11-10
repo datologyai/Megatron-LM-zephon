@@ -25,6 +25,14 @@ from megatron.training.datasets.zephon_dataloader import (
     load_zephon_data_config,
     zephon_train_valid_test_datasets_provider,
 )
+from megatron.training.state import TrainState
+
+
+@pytest.fixture(autouse=True)
+def resume_train_state(monkeypatch):
+    state = TrainState(iteration=7)
+    monkeypatch.setattr("megatron.training.global_vars._GLOBAL_TRAIN_STATE", state)
+    return state
 
 
 def test_load_zephon_data_config(tmp_path: Path) -> None:
@@ -538,7 +546,7 @@ def test_restore_path_matches_megatron_save_path(
         ),
     ):
         restore_path = _zephon_dataloader_checkpoint_path(
-            SimpleNamespace(dataloader_save=tmp_path, iteration=7)
+            SimpleNamespace(dataloader_save=tmp_path), 7
         )
 
     assert Path(restore_path) == save_path
@@ -553,8 +561,9 @@ class _RecordingLoader:
         self.restored.append(state_dict)
 
 
-def _resume_args(tmp_path: Path, *, iteration: int = 7, load: str | None = "/model"):
-    return SimpleNamespace(load=load, dataloader_save=tmp_path, iteration=iteration)
+def _resume_args(tmp_path: Path, *, load: str | None = "/model"):
+    # Upstream stores restored progress in TrainState, not the CLI namespace.
+    return SimpleNamespace(load=load, dataloader_save=tmp_path)
 
 
 @pytest.mark.parametrize("saved_dp_size,resumed_dp_size", [(1, 2), (2, 1)])
@@ -605,10 +614,13 @@ def test_fresh_training_does_not_require_dataloader_checkpoint(tmp_path: Path) -
     assert loader.restored == []
 
 
-def test_iteration_zero_load_starts_a_fresh_dataloader_stream(tmp_path: Path) -> None:
+def test_iteration_zero_load_starts_a_fresh_dataloader_stream(
+    tmp_path: Path, resume_train_state
+) -> None:
     loader = _RecordingLoader()
+    resume_train_state.iteration = 0
 
-    _restore_dataloader_state(loader, _resume_args(tmp_path, iteration=0))
+    _restore_dataloader_state(loader, _resume_args(tmp_path))
 
     assert loader.restored == []
 

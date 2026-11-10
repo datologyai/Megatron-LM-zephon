@@ -55,13 +55,12 @@ def main() -> None:
     from megatron.training.argument_utils import (
         gpt_config_from_args,
         pretrain_cfg_container_from_args,
-        resolve_tokenizer_vocab_size,
     )
     from megatron.training.arguments import parse_and_validate_args
     from megatron.training.datasets.zephon_dataloader import (
         zephon_train_valid_test_datasets_provider,
     )
-    from megatron.training.global_vars import initialize_runtime_services
+    from megatron.training.global_vars import set_run_config
 
     wrapped_pretrain, store = inprocess_restart.maybe_wrap_for_inprocess_restart(pretrain)
     args = parse_and_validate_args(
@@ -81,8 +80,9 @@ def main() -> None:
     else:
         model_cfg = gpt_config_from_args(args, vocab_size_from_tokenizer=True)
     full_config = pretrain_cfg_container_from_args(args, model_cfg)
-    initialize_runtime_services(args)
-    resolve_tokenizer_vocab_size(full_config, args.padded_vocab_size)
+    # pretrain() finalizes the registered config and initializes the tokenizer
+    # and other runtime services, including binding the model vocabulary.
+    set_run_config(full_config)
     wrapped_pretrain(
         full_config,
         zephon_train_valid_test_datasets_provider,

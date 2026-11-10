@@ -5,24 +5,28 @@ on:
     paths:
       - ".github/workflows/zephon-ci.yml"
       - "examples/zephon/**"
-      - "megatron/training/checkpointing.py"
-      - "megatron/training/datasets/zephon_dataloader.py"
-      - "pretrain_gpt_zephon.py"
+      - "megatron/**"
+      - "pretrain_gpt*.py"
+      - "pyproject.toml"
+      - "uv.lock"
       - "requirements-zephon.txt"
       - "tests/assets/zephon_mixture/**"
       - "tests/unit_tests/data/*zephon*"
+      - "tests/unit_tests/conftest.py"
       - "tests/unit_tests/test_checkpointing.py"
   push:
     branches: [main, "codex/zephon-dataloader"]
     paths:
       - ".github/workflows/zephon-ci.yml"
       - "examples/zephon/**"
-      - "megatron/training/checkpointing.py"
-      - "megatron/training/datasets/zephon_dataloader.py"
-      - "pretrain_gpt_zephon.py"
+      - "megatron/**"
+      - "pretrain_gpt*.py"
+      - "pyproject.toml"
+      - "uv.lock"
       - "requirements-zephon.txt"
       - "tests/assets/zephon_mixture/**"
       - "tests/unit_tests/data/*zephon*"
+      - "tests/unit_tests/conftest.py"
       - "tests/unit_tests/test_checkpointing.py"
   workflow_dispatch:
 
@@ -53,21 +57,23 @@ jobs:
             examples/zephon/elastic_resume_demo.py \
             megatron/training/datasets/zephon_dataloader.py \
             pretrain_gpt_zephon.py \
-            tests/unit_tests/data/test_zephon_dataloader.py
+            tests/unit_tests/data/test_zephon*.py
           python -m black --check \
             examples/zephon/elastic_resume_demo.py \
             megatron/training/datasets/zephon_dataloader.py \
             pretrain_gpt_zephon.py \
-            tests/unit_tests/data/test_zephon_dataloader.py
+            tests/unit_tests/data/test_zephon*.py
           python -m ruff check \
             examples/zephon/elastic_resume_demo.py \
             megatron/training/datasets/zephon_dataloader.py \
             pretrain_gpt_zephon.py \
-            tests/unit_tests/data/test_zephon_dataloader.py
+            tests/unit_tests/data/test_zephon*.py
 
   contract:
     name: Megatron adapter contract
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -80,6 +86,11 @@ jobs:
           python -m pip install -r requirements-zephon.txt
       - name: Run public adapter tests
         run: |
-          python -m pytest -q tests/unit_tests/data/test_zephon_dataloader.py
+          python -c "import pretrain_gpt; import pretrain_gpt_zephon"
+          python -m pytest -q tests/unit_tests/data/test_zephon*.py
           python -m pytest -q tests/unit_tests/test_checkpointing.py \
             -k "maybe_save_dataloader_state"
+      - name: Verify exact elastic data-stream resume
+        run: |
+          python examples/zephon/elastic_resume_demo.py --initial-workers 2 --resume-workers 1
+          python examples/zephon/elastic_resume_demo.py --initial-workers 1 --resume-workers 2

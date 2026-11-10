@@ -3,13 +3,16 @@
 import warnings
 from dataclasses import InitVar, dataclass, field, replace
 from enum import Enum
-from typing import List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
 
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.utils import get_attr_wrapped_model
+
+if TYPE_CHECKING:
+    from megatron.core.inference.shards_spec import InferenceShardSpec
 
 
 @dataclass
@@ -59,8 +62,8 @@ class MambaInferenceStateConfig:
     slice start."""
 
     gdp_num_householder: int = 0
-    """Number of Householder copies of the Gated Delta Product layers, or 0 if the
-    model has none. Sizes the GDP chunk descriptors used by the forked prefill
+    """Number of Householder copies of the Gated Delta Product layers, 1 for GDN,
+    or 0 for other mixers. Sizes the chunk descriptors used by the forked prefill
     kernels, whose Householder-expanded token stream is this many times longer."""
 
     def __post_init__(self):
@@ -290,6 +293,13 @@ class ImageProcessingConfig:
     spatial_merge_size: int = 1
     """Round patch-grid sides to a multiple of this, e.g. 2 for a 2x2 patch merger. Also
     scales the ``dynamic_resolution_model_length`` budget by ``spatial_merge_size**2``."""
+
+    image_break_token_id: Optional[int] = None
+    """Token placed after each row of a dynamic-resolution image's tokens except the last, e.g.
+    [IMG_BREAK]. None lays out each image as one run of image tokens."""
+
+    image_end_token_id: Optional[int] = None
+    """Token placed after the last row of a dynamic-resolution image's tokens, e.g. [IMG_END]."""
 
     dynamic_resolution_min_patches: int = 1
     """Minimum patches per image; smaller images are upscaled to reach it."""
@@ -531,6 +541,16 @@ class InferenceConfig:
     This is primarily limited by the combination of `buffer_size_gb` and `max_sequence_length`.
     """
 
+    reserve_recurrent_state_dummy_slot: bool = False
+    """
+    Reserve one recurrent-state buffer for expert-parallel dummy forwards.
+
+    Disaggregated handoff can retain every request-owned recurrent-state slot after its request
+    leaves the active batch. An idle EP rank still needs a state buffer for the dummy forward that
+    joins its peers' expert collectives. The reserved entry is outside normal request capacity and
+    is only allocated for hybrid models with expert parallelism.
+    """
+
     max_tokens: Optional[int] = None
     """
     Max number of tokens to use for forward passes. This is primarily limited by prefill activation
@@ -738,6 +758,14 @@ class InferenceConfig:
     smaller ``max_tokens`` (or ``max_requests``) shrinks the scratch and leaves more
     durable cache slots."""
 
+    disaggregation_shards: Optional[Union[str, Sequence["InferenceShardSpec"], Sequence[dict]]] = (
+        None
+    )
+    """Prefill and decode shard topology for native disaggregated inference."""
+
+    kv_transport_backend: Literal["nixl", "nccl"] = "nixl"
+    """Backend for disaggregated KV and recurrent-state transfers."""
+
     # =================================
     # Logging config
     # =================================
@@ -780,8 +808,25 @@ class InferenceConfig:
     """Mode used to schedule dynamic batching inference work. Defaults to async scheduling; use
     ``AsyncScheduleMode.LEGACY`` to disable it."""
 
+    gc_mode: Literal["default", "freeze", "freeze_overlap"] = "freeze_overlap"
+    """Python garbage collection policy while the engine serves requests.
+
+    `default` keeps CPython's automatic collection unchanged. `freeze` collects and then
+    freezes the heap after engine setup, and again when the engine first drains after a step,
+    so later collections skip long-lived engine state objects; `freeze_overlap` additionally
+    disables automatic collection once the first-drain freeze is done and triggers GC right after
+    each forward pass is submitted, overlapping GC with the queued GPU work. Defaults to
+    `freeze_overlap`.
+    """
+
     logprobs_mode: Literal['raw_logprobs', 'processed_logprobs'] = 'raw_logprobs'
-    """Whether returned log-probs are modified by the sampling parameters or not."""
+    """Whether log-probs of engine-sampled tokens are modified by the sampling parameters.
+
+    `'processed_logprobs'` applies each request's temperature, top-k, and top-p to the
+    log-probs of tokens the engine sampled, including the top-N log-probs at those
+    positions. Prompt log-probs and prompt top-N log-probs score tokens the engine did
+    not sample, so they always use the raw distribution in both modes.
+    """
 
     request_metadata_types: Optional[List[Tuple[str, torch.dtype]]] = None
     """
@@ -793,16 +838,6 @@ class InferenceConfig:
     """Whether to use synchronous ZMQ collectives for inference. If True, the
     all_reduce_max operation will be performed synchronously, which can help reduce
     performance variability for MoEs.
-    """
-
-    disable_ep_consensus: bool = False
-    """If True, the engine skips the EP-group consensus all-reduce in
-    `run_engine_with_coordinator` and decides whether to step based on local
-    state alone. The rank still calls `controller.dummy_forward()` whenever
-    `local_pending == 0`, so EP collectives (NCCL all-to-all, etc.) stay in
-    sync — without this, a peer running a real forward would deadlock waiting
-    on this rank's all-to-all participation. Trades off the consensus
-    all-reduce CPU cost for unconditional dummy_forwards on idle ranks.
     """
 
     ep_consensus_interval: int = 20
@@ -826,8 +861,48 @@ class InferenceConfig:
     only when model weights are guaranteed not to change across those boundaries.
     """
 
+    inference_shortcut_moe_overlap: bool = False
+    """Overlap routed Shortcut MoE work with the ordinary predecessor forward."""
+
+    def validate_shortcut_moe_model(self, model_config) -> None:
+        """Validate model compatibility before engine setup and CUDA graph capture."""
+        if not self.inference_shortcut_moe_overlap:
+            return
+        if not model_config.moe_shortcut_connection:
+            raise ValueError("inference_shortcut_moe_overlap requires Shortcut MoE")
+
+        if model_config.transformer_impl != "inference_optimized":
+            raise ValueError(
+                "inference_shortcut_moe_overlap requires "
+                "transformer_impl='inference_optimized' for the language model"
+            )
+        if model_config.params_dtype != torch.bfloat16:
+            raise ValueError("inference_shortcut_moe_overlap requires BF16 model parameters")
+        if model_config.fp8 or model_config.fp4:
+            raise ValueError("Shortcut MoE overlap with FP8 or FP4 requires further testing")
+        if model_config.tensor_model_parallel_size != 1 or model_config.context_parallel_size != 1:
+            raise ValueError("inference_shortcut_moe_overlap requires TP=1 and CP=1")
+        if model_config.inference_moe_token_dispatcher_type != "nvls":
+            raise ValueError("inference_shortcut_moe_overlap requires the NVLS dispatcher")
+        if model_config.inference_disable_triton_nvls_kernels:
+            raise ValueError("inference_shortcut_moe_overlap requires Triton NVLS kernels")
+        if model_config.fine_grained_activation_offloading:
+            raise ValueError(
+                "inference_shortcut_moe_overlap requires "
+                "fine_grained_activation_offloading=False"
+            )
+        if model_config.batch_invariant_mode or model_config.gdp_cutedsl_kernel:
+            raise ValueError(
+                "inference_shortcut_moe_overlap requires further testing with batch-invariant mode "
+                "or CuTeDSL GDP kernels"
+            )
+
     def __post_init__(self, verbose: bool):
         self._verbose = verbose
+        if self.inference_shortcut_moe_overlap and self.num_speculative_tokens:
+            raise ValueError(
+                "Shortcut MoE overlap with speculative decoding requires further testing"
+            )
         self.async_sched_mode = AsyncScheduleMode(self.async_sched_mode)
         # Not capped at 1: alpha stopped being a blend weight when the score became
         # cache_score - alpha * relative_load, and values above 1 are meaningful --
@@ -847,6 +922,12 @@ class InferenceConfig:
             raise ValueError(
                 f"Unsupported logprobs_mode {self.logprobs_mode!r}. "
                 "Supported modes: raw_logprobs, processed_logprobs."
+            )
+
+        if self.gc_mode not in ("default", "freeze", "freeze_overlap"):
+            raise ValueError(
+                f"Unsupported gc_mode {self.gc_mode!r}. "
+                "Supported modes: default, freeze, freeze_overlap."
             )
 
         # The speculative log-probs path does not yet apply processed-logprobs.
